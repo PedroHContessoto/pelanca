@@ -56,16 +56,16 @@ fn main() {
     }
     
     // Teste de performance (perft) na posição inicial
-    println!("=== TESTE DE PERFORMANCE (PERFT COM TT) ===\n");
-    perft_test("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 6);
+    // println!("=== TESTE DE PERFORMANCE (PERFT COM TT) ===\n");
+    // perft_test("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 7);
     
     // Teste sem TT para debugging
-    println!("\n=== TESTE SEM TT (DEBUGGING) ===");
-    perft_test_no_tt("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 6);
+    // println!("\n=== TESTE SEM TT (DEBUGGING) ===");
+    // perft_test_no_tt("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 7);
     
     // Teste paralelo para profundidades altas
     println!("\n=== TESTE PARALELO (DEPTH 6) ===");
-    perft_test_parallel("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 6);
+    perft_test_parallel("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 7);
 }
 
 fn test_position(name: &str, fen: &str) {
