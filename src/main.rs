@@ -19,7 +19,7 @@ fn main() {
     
     // Teste de performance (perft) na posição inicial
     println!("=== TESTE DE PERFORMANCE (PERFT) ===\n");
-    perft_test("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 4);
+    perft_test("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 8);
 }
 
 fn test_position(name: &str, fen: &str) {
@@ -160,9 +160,6 @@ fn perft(board: &mut Board, depth: u8) -> u64 {
         board.unmake_move(mv, undo_info);
     }
     
-    if depth <= 3 && legal_moves == 0 {
-        println!("DEBUG: Profundidade {}, {} movimentos gerados, 0 legais!", depth, moves_count);
-    }
     
     nodes
 }

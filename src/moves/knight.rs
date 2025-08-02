@@ -30,23 +30,24 @@ pub fn get_knight_attacks(square: u8) -> Bitboard {
     KNIGHT_ATTACKS[square as usize]
 }
 
-/// Gera todos os lances pseudo-legais para os cavalos do jogador atual.
+/// Gera todos os lances pseudo-legais para os cavalos usando tabela pré-computada (ULTRA RÁPIDO)
 pub fn generate_knight_moves(board: &Board) -> Vec<Move> {
-    let mut moves = Vec::with_capacity(16); // Pre-aloca para reduzir realocações
+    let mut moves = Vec::with_capacity(16);
     let our_pieces = if board.to_move == Color::White { board.white_pieces } else { board.black_pieces };
     let mut our_knights = board.knights & our_pieces;
 
     while our_knights != 0 {
         let from_sq = our_knights.trailing_zeros() as u8;
-        let attacks = get_knight_attacks(from_sq);
-        let mut valid_moves = attacks & !our_pieces;
+        our_knights &= our_knights - 1; // Remove LSB
+        
+        // Usa tabela pré-computada diretamente (1 ciclo CPU)
+        let mut valid_moves = KNIGHT_ATTACKS[from_sq as usize] & !our_pieces;
 
         while valid_moves != 0 {
             let to_sq = valid_moves.trailing_zeros() as u8;
+            valid_moves &= valid_moves - 1; // Remove LSB
             moves.push(Move { from: from_sq, to: to_sq, promotion: None, is_castling: false, is_en_passant: false });
-            valid_moves &= valid_moves - 1;
         }
-        our_knights &= our_knights - 1;
     }
     moves
 }
