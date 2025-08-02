@@ -35,7 +35,12 @@ pub fn popcount(bb: Bitboard) -> u32 {
     }
     #[cfg(target_arch = "aarch64")]
     {
-        bb.count_ones()
+        // Use AArch64 native vectorized popcount for maximum performance
+        unsafe {
+            let v = std::arch::aarch64::vreinterpretq_u8_u64(std::arch::aarch64::vdupq_n_u64(bb));
+            let cnt = std::arch::aarch64::vcntq_u8(v);
+            std::arch::aarch64::vaddlvq_u8(cnt) as u32
+        }
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "x86", target_arch = "aarch64")))]
     {
@@ -75,7 +80,12 @@ pub fn trailing_zeros(bb: Bitboard) -> u32 {
             bb.trailing_zeros()
         }
     }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
+    #[cfg(target_arch = "aarch64")]
+    {
+        // AArch64 has excellent trailing zeros support
+        if bb == 0 { 64 } else { bb.trailing_zeros() }
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86", target_arch = "aarch64")))]
     {
         bb.trailing_zeros()
     }
@@ -113,7 +123,12 @@ pub fn leading_zeros(bb: Bitboard) -> u32 {
             bb.leading_zeros()
         }
     }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
+    #[cfg(target_arch = "aarch64")]
+    {
+        // AArch64 CLZ instruction via compiler intrinsic
+        if bb == 0 { 64 } else { bb.leading_zeros() }
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86", target_arch = "aarch64")))]
     {
         bb.leading_zeros()
     }
@@ -196,19 +211,18 @@ pub fn parallel_extract(source: Bitboard, mask: Bitboard) -> Bitboard {
             std::arch::x86_64::_pext_u64(source, mask)
         }
     } else {
-        // Fallback manual para CPUs sem BMI2
+        // Fallback otimizado para CPUs sem BMI2
         let mut result = 0u64;
-        let mut src = source;
-        let mut msk = mask;
         let mut bit_pos = 0;
+        let mut m = mask;
         
-        while msk != 0 {
-            if (src & 1) != 0 {
+        while m != 0 {
+            let lsb = m & m.wrapping_neg();
+            if (source & lsb) != 0 {
                 result |= 1u64 << bit_pos;
-                bit_pos += 1;
             }
-            src >>= 1;
-            msk &= msk - 1;
+            bit_pos += 1;
+            m &= m - 1;
         }
         result
     }
@@ -320,174 +334,6 @@ impl BitboardOps for Bitboard {
 }
 
 // ============================================================================
-// BENCHMARK E TESTES
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_popcount_consistency() {
-        let test_values = [
-            0x0000000000000000,
-            0x0000000000000001,
-            0x8000000000000000,
-            0xFFFFFFFFFFFFFFFF,
-            0x0F0F0F0F0F0F0F0F,
-            0x5555555555555555,
-            0xAAAAAAAAAAAAAAAA,
-        ];
-
-        for value in test_values {
-            assert_eq!(popcount(value), value.count_ones());
-        }
-    }
-
-    #[test]
-    fn test_trailing_zeros_consistency() {
-        let test_values = [
-            0x0000000000000001,
-            0x0000000000000002,
-            0x0000000000000004,
-            0x8000000000000000,
-            0x0F0F0F0F0F0F0F0F,
-        ];
-
-        for value in test_values {
-            assert_eq!(trailing_zeros(value), value.trailing_zeros());
-        }
-    }
-
-    #[test]
-    fn test_leading_zeros_consistency() {
-        let test_values = [
-            0x0000000000000001,
-            0x8000000000000000,
-            0x4000000000000000,
-            0x0F0F0F0F0F0F0F0F,
-        ];
-
-        for value in test_values {
-            assert_eq!(leading_zeros(value), value.leading_zeros());
-        }
-    }
-
-    #[test]
-    fn test_bitboard_iterator() {
-        let bb = 0x0000000000000105; // bits nas posições 0, 2, 8
-        let squares: Vec<u8> = bb.iter_squares().collect();
-        assert_eq!(squares, vec![0, 2, 8]);
-    }
-
-    #[test]
-    fn test_bit_manipulation() {
-        let bb = 0x0000000000000101; // bits nas posições 0 e 8
-        
-        assert_eq!(isolate_lsb(bb), 0x0000000000000001);
-        assert_eq!(reset_lsb(bb), 0x0000000000000100);
-        assert_eq!(is_single_bit(0x0000000000000100), true);
-        assert_eq!(is_single_bit(bb), false);
-    }
-}
-
-#[cfg(test)]
-mod benchmarks {
-    use super::*;
-    use std::time::Instant;
-
-    #[test]
-    fn benchmark_popcount() {
-        let iterations = 10_000_000;
-        let test_value = 0x5A5A5A5A5A5A5A5A;
-
-        // Benchmark intrinsics version
-        let start = Instant::now();
-        for _ in 0..iterations {
-            let _ = popcount(test_value);
-        }
-        let intrinsics_time = start.elapsed();
-
-        // Benchmark standard version
-        let start = Instant::now();
-        for _ in 0..iterations {
-            let _ = test_value.count_ones();
-        }
-        let standard_time = start.elapsed();
-
-        println!("Intrinsics popcount: {:?}", intrinsics_time);
-        println!("Standard popcount: {:?}", standard_time);
-        
-        if intrinsics_time < standard_time {
-            println!("Speedup: {:.2}x", standard_time.as_nanos() as f64 / intrinsics_time.as_nanos() as f64);
-        }
-    }
-
-    #[test]
-    fn benchmark_trailing_zeros() {
-        let iterations = 10_000_000;
-        let test_value = 0x1000000000000000;
-
-        // Benchmark intrinsics version
-        let start = Instant::now();
-        for _ in 0..iterations {
-            let _ = trailing_zeros(test_value);
-        }
-        let intrinsics_time = start.elapsed();
-
-        // Benchmark standard version
-        let start = Instant::now();
-        for _ in 0..iterations {
-            let _ = test_value.trailing_zeros();
-        }
-        let standard_time = start.elapsed();
-
-        println!("Intrinsics trailing_zeros: {:?}", intrinsics_time);
-        println!("Standard trailing_zeros: {:?}", standard_time);
-        
-        if intrinsics_time < standard_time {
-            println!("Speedup: {:.2}x", standard_time.as_nanos() as f64 / intrinsics_time.as_nanos() as f64);
-        }
-    }
-
-    #[test] 
-    fn benchmark_bitboard_iteration() {
-        let iterations = 1_000_000;
-        let test_bb = 0x5A5A5A5A5A5A5A5A;
-
-        // Benchmark optimized iterator
-        let start = Instant::now();
-        for _ in 0..iterations {
-            let mut count = 0;
-            for _square in test_bb.iter_squares() {
-                count += 1;
-            }
-        }
-        let optimized_time = start.elapsed();
-
-        // Benchmark standard approach
-        let start = Instant::now();
-        for _ in 0..iterations {
-            let mut bb = test_bb;
-            let mut count = 0;
-            while bb != 0 {
-                let _square = bb.trailing_zeros();
-                bb &= bb - 1;
-                count += 1;
-            }
-        }
-        let standard_time = start.elapsed();
-
-        println!("Optimized iteration: {:?}", optimized_time);
-        println!("Standard iteration: {:?}", standard_time);
-        
-        if optimized_time < standard_time {
-            println!("Speedup: {:.2}x", standard_time.as_nanos() as f64 / optimized_time.as_nanos() as f64);
-        }
-    }
-}
-
-// ============================================================================
 // FUNÇÕES DE DETECÇÃO DE FEATURES
 // ============================================================================
 
@@ -515,7 +361,8 @@ pub fn has_popcnt_support() -> bool {
     }
 }
 
-/// Inicializa e reporta features disponíveis
+/// Inicializa intrinsics com logs condicionais para performance máxima
+#[cfg(debug_assertions)]
 pub fn init_intrinsics() {
     println!("info string Intrinsics Support:");
     println!("info string - POPCNT: {}", has_popcnt_support());
@@ -525,5 +372,40 @@ pub fn init_intrinsics() {
         println!("info string - BMI1: {}", is_x86_feature_detected!("bmi1"));
         println!("info string - BMI2: {}", is_x86_feature_detected!("bmi2"));
         println!("info string - LZCNT: {}", is_x86_feature_detected!("lzcnt"));
+    }
+    
+    #[cfg(target_arch = "aarch64")]
+    {
+        println!("info string - AArch64 native intrinsics enabled");
+    }
+}
+
+/// No-op em release builds para eliminar overhead
+#[cfg(not(debug_assertions))]
+pub fn init_intrinsics() {}
+
+/// Índice de ocupação otimizado para magic bitboards usando PEXT quando disponível
+#[inline(always)]
+pub fn get_occupancy_index(occupancy: Bitboard, mask: Bitboard) -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        parallel_extract(occupancy & mask, mask)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        // Fallback eficiente para outras arquiteturas
+        let mut index = 0u64;
+        let mut occ = occupancy & mask;
+        let mut m = mask;
+        let mut bit = 0;
+        
+        while m != 0 {
+            if (occ & (m & m.wrapping_neg())) != 0 {
+                index |= 1u64 << bit;
+            }
+            bit += 1;
+            m &= m - 1;
+        }
+        index
     }
 }

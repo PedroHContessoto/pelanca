@@ -207,9 +207,13 @@ impl<'a> Drop for TimerHandle<'a> {
     }
 }
 
-/// Instância global do profiler
-lazy_static::lazy_static! {
-    pub static ref PROFILER: PerformanceProfiler = PerformanceProfiler::new();
+/// Instância global do profiler usando OnceLock para compatibilidade
+use std::sync::OnceLock;
+static PROFILER: OnceLock<PerformanceProfiler> = OnceLock::new();
+
+/// Acessa o profiler global
+pub fn get_profiler() -> &'static PerformanceProfiler {
+    PROFILER.get_or_init(|| PerformanceProfiler::new())
 }
 
 /// Macro para facilitar o profiling
@@ -217,7 +221,7 @@ lazy_static::lazy_static! {
 macro_rules! profile {
     ($name:expr, $code:block) => {
         {
-            let _timer = crate::profiling::PROFILER.start_timer($name);
+            let _timer = crate::profiling::get_profiler().start_timer($name);
             $code
         }
     };

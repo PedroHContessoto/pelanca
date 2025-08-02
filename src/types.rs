@@ -57,6 +57,7 @@ impl PieceKind {
 pub struct UndoInfo {
     pub captured_piece: Option<PieceKind>,
     pub captured_square: u8,
+    pub moved_piece: PieceKind, // Otimização: evita branches em unmake_move
     pub old_castling_rights: u8,
     pub old_en_passant_target: Option<u8>,
     pub old_halfmove_clock: u16,

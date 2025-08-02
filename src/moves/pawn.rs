@@ -157,6 +157,33 @@ pub fn get_pawn_double_moves(square: u8, color: Color) -> Bitboard {
     }
 }
 
+/// Obtém as posições de peões que podem atacar uma casa (reverse attacks O(1))
+#[inline(always)]
+pub fn get_pawn_attackers(square: u8, attacking_color: Color) -> Bitboard {
+    let mut attackers = 0u64;
+    match attacking_color {
+        Color::White => {
+            // Peões brancos atacam diagonalmente para cima
+            if square % 8 != 0 && square >= 9 {
+                attackers |= 1u64 << (square - 9); // Ataque da esquerda
+            }
+            if square % 8 != 7 && square >= 7 {
+                attackers |= 1u64 << (square - 7); // Ataque da direita
+            }
+        }
+        Color::Black => {
+            // Peões pretos atacam diagonalmente para baixo
+            if square % 8 != 0 && square <= 54 {
+                attackers |= 1u64 << (square + 7); // Ataque da esquerda (visão preta)
+            }
+            if square % 8 != 7 && square <= 56 {
+                attackers |= 1u64 << (square + 9); // Ataque da direita
+            }
+        }
+    }
+    attackers
+}
+
 /// Gera todos os lances pseudo-legais para os peões do jogador atual.
 pub fn generate_pawn_moves(board: &Board) -> Vec<Move> {
     let mut moves = Vec::with_capacity(16);

@@ -315,7 +315,7 @@ pub fn init_magic_bitboards() {
     }
     // Inicializar ataques de torre
     let mut rook_attacks = Vec::new();
-    let mut total_size = 0;
+    let mut _total_size = 0;
     
     for square in 0..64 {
         let magic = &ROOK_MAGICS_TABLE[square];
@@ -330,7 +330,7 @@ pub fn init_magic_bitboards() {
         }
         
         rook_attacks.extend(attacks);
-        total_size += size;
+        _total_size += size;
     }
     
     let _ = ROOK_ATTACKS.set(rook_attacks);

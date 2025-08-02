@@ -166,8 +166,8 @@ impl Board {
 
     /// Gera todos os lances pseudo-legais para todas as peças do jogador atual.
     pub fn generate_all_moves(&self) -> Vec<Move> {
-        // Pre-aloca com capacidade estimada para reduzir realocações
-        let mut moves = Vec::with_capacity(64);
+        // Pre-aloca com capacidade otimizada para posições médias
+        let mut moves = Vec::with_capacity(100);
 
         moves.extend(moves::pawn::generate_pawn_moves(self));
         moves.extend(moves::knight::generate_knight_moves(self));
@@ -206,6 +206,37 @@ impl Board {
         // Reset en passant target
         self.en_passant_target = None;
 
+        // =================== ZOBRIST INCREMENTAL UPDATE ===================
+        // Captura informações das peças ANTES das atualizações do bitboard
+        let color_idx = color_to_index(moving_color);
+        let piece_kind = self.get_piece_at(mv.from).unwrap().kind;
+        let piece_idx = piece_to_index(piece_kind);
+        
+        let captured_piece_info = if is_capture {
+            self.get_piece_at(mv.to)
+        } else {
+            None
+        };
+
+        // XOR para remover a peça movida da origem
+        self.zobrist_hash ^= ZOBRIST_KEYS.pieces[color_idx][piece_idx][mv.from as usize];
+
+        // Se captura, XOR para remover a peça capturada do destino
+        if let Some(captured_piece) = captured_piece_info {
+            let captured_color_idx = color_to_index(!moving_color);
+            let captured_piece_idx = piece_to_index(captured_piece.kind);
+            self.zobrist_hash ^= ZOBRIST_KEYS.pieces[captured_color_idx][captured_piece_idx][mv.to as usize];
+        }
+
+        // Tratamento separado para promoção (XOR para adicionar a peça promovida em vez do peão)
+        if let Some(promotion) = mv.promotion {
+            let promoted_idx = piece_to_index(promotion);
+            self.zobrist_hash ^= ZOBRIST_KEYS.pieces[color_idx][promoted_idx][mv.to as usize];
+        } else {
+            // XOR para adicionar a peça movida ao destino
+            self.zobrist_hash ^= ZOBRIST_KEYS.pieces[color_idx][piece_idx][mv.to as usize];
+        }
+
         // Trata roque
         if mv.is_castling {
             // Move o rei
@@ -213,13 +244,21 @@ impl Board {
                 self.white_pieces ^= from_bb | to_bb;
                 self.kings ^= from_bb | to_bb;
 
-                // Move a torre correspondente
+                // Move a torre correspondente + Zobrist
                 if mv.to == 6 { // Roque pequeno
                     self.white_pieces ^= 0b10000000 | 0b00100000; // h1 -> f1
                     self.rooks ^= 0b10000000 | 0b00100000;
+                    // Atualiza Zobrist para torre: remove h1, adiciona f1
+                    let rook_idx = piece_to_index(PieceKind::Rook);
+                    self.zobrist_hash ^= ZOBRIST_KEYS.pieces[0][rook_idx][7]; // Remove h1
+                    self.zobrist_hash ^= ZOBRIST_KEYS.pieces[0][rook_idx][5]; // Adiciona f1
                 } else { // Roque grande
                     self.white_pieces ^= 0b00000001 | 0b00001000; // a1 -> d1
                     self.rooks ^= 0b00000001 | 0b00001000;
+                    // Atualiza Zobrist para torre: remove a1, adiciona d1
+                    let rook_idx = piece_to_index(PieceKind::Rook);
+                    self.zobrist_hash ^= ZOBRIST_KEYS.pieces[0][rook_idx][0]; // Remove a1
+                    self.zobrist_hash ^= ZOBRIST_KEYS.pieces[0][rook_idx][3]; // Adiciona d1
                 }
                 // Remove direitos de roque das brancas
                 self.castling_rights &= 0b1100;
@@ -227,21 +266,34 @@ impl Board {
                 self.black_pieces ^= from_bb | to_bb;
                 self.kings ^= from_bb | to_bb;
 
-                // Move a torre correspondente
+                // Move a torre correspondente + Zobrist
                 if mv.to == 62 { // Roque pequeno
                     self.black_pieces ^= 0x8000000000000000 | 0x2000000000000000; // h8 -> f8
                     self.rooks ^= 0x8000000000000000 | 0x2000000000000000;
+                    // Atualiza Zobrist para torre: remove h8, adiciona f8
+                    let rook_idx = piece_to_index(PieceKind::Rook);
+                    self.zobrist_hash ^= ZOBRIST_KEYS.pieces[1][rook_idx][63]; // Remove h8
+                    self.zobrist_hash ^= ZOBRIST_KEYS.pieces[1][rook_idx][61]; // Adiciona f8
                 } else { // Roque grande
                     self.black_pieces ^= 0x0100000000000000 | 0x0800000000000000; // a8 -> d8
                     self.rooks ^= 0x0100000000000000 | 0x0800000000000000;
+                    // Atualiza Zobrist para torre: remove a8, adiciona d8
+                    let rook_idx = piece_to_index(PieceKind::Rook);
+                    self.zobrist_hash ^= ZOBRIST_KEYS.pieces[1][rook_idx][56]; // Remove a8
+                    self.zobrist_hash ^= ZOBRIST_KEYS.pieces[1][rook_idx][59]; // Adiciona d8
                 }
                 // Remove direitos de roque das pretas
                 self.castling_rights &= 0b0011;
             }
         } else if mv.is_en_passant {
-            // En passant: remove o peão capturado
+            // En passant: remove o peão capturado + atualiza Zobrist
             let captured_pawn_square = if moving_color == Color::White { mv.to - 8 } else { mv.to + 8 };
             let captured_pawn_bb = 1u64 << captured_pawn_square;
+
+            // Atualiza Zobrist para o peão capturado en passant
+            let captured_color_idx = color_to_index(!moving_color);
+            let pawn_idx = piece_to_index(PieceKind::Pawn);
+            self.zobrist_hash ^= ZOBRIST_KEYS.pieces[captured_color_idx][pawn_idx][captured_pawn_square as usize];
 
             // Remove o peão capturado
             self.pawns &= !captured_pawn_bb;
@@ -370,21 +422,16 @@ impl Board {
 
     /// Verifica se uma casa é atacada por peças da cor especificada
     pub fn is_square_attacked_by(&self, square: u8, attacking_color: Color) -> bool {
-        let square_bb = 1u64 << square;
+        let _square_bb = 1u64 << square;
         let attacking_pieces = if attacking_color == Color::White { self.white_pieces } else { self.black_pieces };
 
         // Early exit: se não há peças atacantes, não há ataques
         if attacking_pieces == 0 { return false; }
 
-        // Verifica ataques de peões usando a função otimizada
+        // Verifica ataques de peões usando reverse attacks (O(1) em vez de O(n))
         if (self.pawns & attacking_pieces) != 0 {
-            let mut attacking_pawns = self.pawns & attacking_pieces;
-            while attacking_pawns != 0 {
-                let pawn_square = attacking_pawns.trailing_zeros() as u8;
-                let pawn_attacks = crate::moves::pawn::get_pawn_attacks(pawn_square, attacking_color);
-                if (pawn_attacks & (1u64 << square)) != 0 { return true; }
-                attacking_pawns &= attacking_pawns - 1;
-            }
+            let pawn_attackers = crate::moves::pawn::get_pawn_attackers(square, attacking_color);
+            if (pawn_attackers & self.pawns & attacking_pieces) != 0 { return true; }
         }
 
         // Verifica ataques de cavalos
@@ -619,9 +666,12 @@ impl Board {
     /// Executa um movimento e retorna informação para desfazê-lo
     pub fn make_move_with_undo(&mut self, mv: Move) -> UndoInfo {
         let (captured_piece, captured_square) = self.get_captured_piece(mv);
+        let moved_piece = self.get_piece_at(mv.from).unwrap().kind; // Identifica peça movida
+        
         let undo_info = UndoInfo {
             captured_piece,
             captured_square,
+            moved_piece,
             old_castling_rights: self.castling_rights,
             old_en_passant_target: self.en_passant_target,
             old_halfmove_clock: self.halfmove_clock,
@@ -725,19 +775,14 @@ impl Board {
                 self.black_pieces ^= from_bb | to_bb;
             }
 
-            // Identifica e move a peça de volta (verifica na posição 'to' atual)
-            if (self.pawns & to_bb) != 0 {
-                self.pawns ^= from_bb | to_bb;
-            } else if (self.knights & to_bb) != 0 {
-                self.knights ^= from_bb | to_bb;
-            } else if (self.bishops & to_bb) != 0 {
-                self.bishops ^= from_bb | to_bb;
-            } else if (self.rooks & to_bb) != 0 {
-                self.rooks ^= from_bb | to_bb;
-            } else if (self.queens & to_bb) != 0 {
-                self.queens ^= from_bb | to_bb;
-            } else if (self.kings & to_bb) != 0 {
-                self.kings ^= from_bb | to_bb;
+            // Move a peça de volta usando moved_piece (evita branches)
+            match undo_info.moved_piece {
+                PieceKind::Pawn => self.pawns ^= from_bb | to_bb,
+                PieceKind::Knight => self.knights ^= from_bb | to_bb,
+                PieceKind::Bishop => self.bishops ^= from_bb | to_bb,
+                PieceKind::Rook => self.rooks ^= from_bb | to_bb,
+                PieceKind::Queen => self.queens ^= from_bb | to_bb,
+                PieceKind::King => self.kings ^= from_bb | to_bb,
             }
         }
 
@@ -764,6 +809,36 @@ impl Board {
                 self.white_pieces |= captured_bb;
             }
         }
+    }
+
+    /// Identifica que peça está em uma casa específica (otimizado para make/unmake)
+    fn get_piece_at(&self, square: u8) -> Option<Piece> {
+        let bb = 1u64 << square;
+        let color = if (self.white_pieces & bb) != 0 {
+            Color::White
+        } else if (self.black_pieces & bb) != 0 {
+            Color::Black
+        } else {
+            return None;
+        };
+        
+        let kind = if (self.pawns & bb) != 0 {
+            PieceKind::Pawn
+        } else if (self.knights & bb) != 0 {
+            PieceKind::Knight
+        } else if (self.bishops & bb) != 0 {
+            PieceKind::Bishop
+        } else if (self.rooks & bb) != 0 {
+            PieceKind::Rook
+        } else if (self.queens & bb) != 0 {
+            PieceKind::Queen
+        } else if (self.kings & bb) != 0 {
+            PieceKind::King
+        } else {
+            return None;
+        };
+        
+        Some(Piece::new(kind, color))
     }
 
     /// Identifica que peça foi capturada e em qual casa (essencial para en passant)
