@@ -1,6 +1,27 @@
 [package]
 name = "pelanca"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+authors = ["Pedro Contessoto"]
+description = "High-performance chess engine written in Rust"
+
+[[bin]]
+name = "pelanca_v1"
+path = "src/main.rs"
+
 
 [dependencies]
+rayon = "1.8"
+lazy_static = "1.4"
+num_cpus = "1.16"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[profile.release]
+opt-level = 3
+debug = true
+overflow-checks = false
+lto = true
+codegen-units = 1
+panic = "abort"

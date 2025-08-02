@@ -77,7 +77,7 @@ impl Piece {
     pub fn new(kind: PieceKind, color: Color) -> Self {
         Piece { kind, color }
     }
-    
+
     pub fn piece_type(&self) -> PieceKind {
         self.kind
     }

@@ -309,6 +309,10 @@ fn generate_occupancies(mask: Bitboard) -> Vec<Bitboard> {
 
 /// Inicializa as tabelas de ataque globais
 pub fn init_magic_bitboards() {
+    // Verifica se já foi inicializado
+    if ROOK_ATTACKS.get().is_some() && BISHOP_ATTACKS.get().is_some() {
+        return;
+    }
     // Inicializar ataques de torre
     let mut rook_attacks = Vec::new();
     let mut total_size = 0;
@@ -329,7 +333,7 @@ pub fn init_magic_bitboards() {
         total_size += size;
     }
     
-    ROOK_ATTACKS.set(rook_attacks).unwrap();
+    let _ = ROOK_ATTACKS.set(rook_attacks);
 
     // Inicializar ataques de bispo  
     let mut bishop_attacks = Vec::new();
@@ -349,7 +353,7 @@ pub fn init_magic_bitboards() {
         bishop_attacks.extend(attacks);
     }
     
-    BISHOP_ATTACKS.set(bishop_attacks).unwrap();
+    let _ = BISHOP_ATTACKS.set(bishop_attacks);
 }
 
 // ============================================================================
