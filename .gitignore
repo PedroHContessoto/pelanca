@@ -1,0 +1,58 @@
+# Arquivos e diretórios gerados pelo Cargo
+/target/
+/Cargo.lock
+
+# Diretórios temporários de desenvolvimento
+**/*.rs.bk
+**/*.rs.old
+**/*.swp
+**/*.swo
+
+# Arquivos de log, dumps e rastreamento
+*.log
+*.dSYM
+*.trace
+*.profraw
+
+# Diretórios de IDEs e editores
+.idea/
+.vscode/
+*.code-workspace
+
+# Arquivos do CLion/RustRover
+cmake-build-*/
+*.iml
+
+# Diretórios e arquivos de ferramentas de benchmarking
+flamegraph.svg
+*.bench
+*.crit
+*.trace
+*.perf
+
+# Cache de builds e artefatos temporários
+*.rlib
+*.rmeta
+*.o
+*.so
+*.a
+*.d
+
+# Arquivos gerados por testes
+*.stackdump
+*.test
+*.out
+*.stderr
+*.stdout
+
+# Arquivos temporários de backup
+*~
+*.tmp
+*.bak
+
+# Evitar indexar dependências vendorizadas (se usar cargo vendor)
+vendor/
+
+# Arquivos do sistema operacional
+.DS_Store
+Thumbs.db
