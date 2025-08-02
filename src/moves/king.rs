@@ -49,12 +49,14 @@ pub fn generate_king_moves(board: &Board) -> Vec<Move> {
         moves.push(Move { from: from_sq, to: to_sq, promotion: None, is_castling: false, is_en_passant: false });
     }
 
-    // Lógica de roque otimizada
+    // Lógica de roque com validação completa
     if board.to_move == Color::White {
         // Roque pequeno das brancas (e1-g1)
         if (board.castling_rights & 0b0001) != 0 {
-            if (board.white_pieces | board.black_pieces) & 0b01100000 == 0 { // f1 e g1 vazias
-                if !board.is_square_attacked_by(4, Color::Black) && // e1 não atacada
+            // Verifica se f1 e g1 estão vazias
+            if (board.white_pieces | board.black_pieces) & 0b01100000 == 0 {
+                // Verifica se rei não está em xeque e não passa por casas atacadas
+                if !board.is_king_in_check(Color::White) && // rei não em xeque
                    !board.is_square_attacked_by(5, Color::Black) && // f1 não atacada
                    !board.is_square_attacked_by(6, Color::Black) {  // g1 não atacada
                     moves.push(Move { from: 4, to: 6, promotion: None, is_castling: true, is_en_passant: false });
@@ -64,8 +66,10 @@ pub fn generate_king_moves(board: &Board) -> Vec<Move> {
         
         // Roque grande das brancas (e1-c1)
         if (board.castling_rights & 0b0010) != 0 {
-            if (board.white_pieces | board.black_pieces) & 0b00001110 == 0 { // b1, c1, d1 vazias
-                if !board.is_square_attacked_by(4, Color::Black) && // e1 não atacada
+            // Verifica se b1, c1, d1 estão vazias
+            if (board.white_pieces | board.black_pieces) & 0b00001110 == 0 {
+                // Verifica se rei não está em xeque e não passa por casas atacadas
+                if !board.is_king_in_check(Color::White) && // rei não em xeque
                    !board.is_square_attacked_by(3, Color::Black) && // d1 não atacada
                    !board.is_square_attacked_by(2, Color::Black) {  // c1 não atacada
                     moves.push(Move { from: 4, to: 2, promotion: None, is_castling: true, is_en_passant: false });
@@ -75,8 +79,10 @@ pub fn generate_king_moves(board: &Board) -> Vec<Move> {
     } else {
         // Roque pequeno das pretas (e8-g8)
         if (board.castling_rights & 0b0100) != 0 {
-            if (board.white_pieces | board.black_pieces) & 0x6000000000000000 == 0 { // f8 e g8 vazias
-                if !board.is_square_attacked_by(60, Color::White) && // e8 não atacada
+            // Verifica se f8 e g8 estão vazias
+            if (board.white_pieces | board.black_pieces) & 0x6000000000000000 == 0 {
+                // Verifica se rei não está em xeque e não passa por casas atacadas
+                if !board.is_king_in_check(Color::Black) && // rei não em xeque
                    !board.is_square_attacked_by(61, Color::White) && // f8 não atacada
                    !board.is_square_attacked_by(62, Color::White) {  // g8 não atacada
                     moves.push(Move { from: 60, to: 62, promotion: None, is_castling: true, is_en_passant: false });
@@ -86,8 +92,10 @@ pub fn generate_king_moves(board: &Board) -> Vec<Move> {
         
         // Roque grande das pretas (e8-c8)
         if (board.castling_rights & 0b1000) != 0 {
-            if (board.white_pieces | board.black_pieces) & 0x0e00000000000000 == 0 { // b8, c8, d8 vazias
-                if !board.is_square_attacked_by(60, Color::White) && // e8 não atacada
+            // Verifica se b8, c8, d8 estão vazias
+            if (board.white_pieces | board.black_pieces) & 0x0e00000000000000 == 0 {
+                // Verifica se rei não está em xeque e não passa por casas atacadas
+                if !board.is_king_in_check(Color::Black) && // rei não em xeque
                    !board.is_square_attacked_by(59, Color::White) && // d8 não atacada
                    !board.is_square_attacked_by(58, Color::White) {  // c8 não atacada
                     moves.push(Move { from: 60, to: 58, promotion: None, is_castling: true, is_en_passant: false });

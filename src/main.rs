@@ -136,30 +136,22 @@ fn perft(board: &mut Board, depth: u8) -> u64 {
     let moves = board.generate_all_moves(); // pseudo-legais
     
     if depth == 1 {
-        // Para profundidade 1, filtra apenas os movimentos legais
-        return moves.iter()
-            .filter(|&&mv| board.is_legal_move(mv))
-            .count() as u64;
+        // Para profundidade 1, conta todos os movimentos gerados
+        return moves.len() as u64;
     }
     
     let mut nodes = 0;
-    let mut legal_moves = 0;
-    let moves_count = moves.len();
     
     for mv in moves {
-        // Aplica o movimento e verifica se é legal (rei não fica em xeque)
+        // Aplica movimento sem validação
         let undo_info = board.make_move_with_undo(mv);
         
-        // Verifica se o movimento é legal (rei da cor que jogou não está em xeque)
-        let original_color = !board.to_move; // Cor que acabou de jogar (turno já mudou)
-        if !board.is_king_in_check(original_color) {
-            legal_moves += 1;
-            nodes += perft(board, depth - 1);
-        }
+        // Conta todos os nós descendentes
+        nodes += perft(board, depth - 1);
         
+        // Desfaz movimento
         board.unmake_move(mv, undo_info);
     }
-    
     
     nodes
 }
