@@ -9,6 +9,23 @@ const NOT_H_FILE: Bitboard = 0x7f7f7f7f7f7f7f7f;
 const RANK_3: Bitboard = 0x0000000000FF0000;
 const RANK_6: Bitboard = 0x0000FF0000000000;
 
+/// Obtém o bitboard de ataques de peão para uma casa específica e cor
+#[inline]
+pub fn get_pawn_attacks(square: u8, color: Color) -> Bitboard {
+    let square_bb = 1u64 << square;
+    
+    match color {
+        Color::White => {
+            // Peões brancos atacam diagonalmente para cima
+            ((square_bb << 7) & NOT_H_FILE) | ((square_bb << 9) & NOT_A_FILE)
+        }
+        Color::Black => {
+            // Peões pretos atacam diagonalmente para baixo
+            ((square_bb >> 7) & NOT_A_FILE) | ((square_bb >> 9) & NOT_H_FILE)
+        }
+    }
+}
+
 /// Gera todos os lances pseudo-legais para os peões do jogador atual.
 pub fn generate_pawn_moves(board: &Board) -> Vec<Move> {
     let mut moves = Vec::with_capacity(16);

@@ -408,11 +408,11 @@ impl Board {
     }
 
     fn get_knight_attacks(&self, square: u8) -> u64 {
-        crate::moves::knight::get_knight_attacks_lookup(square)
+        crate::moves::knight::get_knight_attacks(square)
     }
 
     fn get_king_attacks(&self, square: u8) -> u64 {
-        crate::moves::king::get_king_attacks_lookup(square)
+        crate::moves::king::get_king_attacks(square)
     }
 
     fn is_attacked_by_sliding_piece(&self, square: u8, attacking_color: Color, is_diagonal: bool) -> bool {
@@ -641,5 +641,110 @@ impl Board {
             }
         }
         false
+    }
+
+    /// Executa um movimento e retorna informação para desfazê-lo
+    pub fn make_move_with_undo(&mut self, mv: Move) -> UndoInfo {
+        let undo_info = UndoInfo {
+            captured_piece: self.get_captured_piece(mv),
+            captured_square: mv.to,
+            old_castling_rights: self.castling_rights,
+            old_en_passant_target: self.en_passant_target,
+            old_halfmove_clock: self.halfmove_clock,
+            old_zobrist_hash: self.zobrist_hash,
+            old_white_king_in_check: self.white_king_in_check,
+            old_black_king_in_check: self.black_king_in_check,
+        };
+
+        self.make_move(mv);
+        undo_info
+    }
+
+    /// Desfaz um movimento usando a informação de UndoInfo
+    pub fn unmake_move(&mut self, mv: Move, undo_info: UndoInfo) {
+        // Restaura o estado anterior
+        self.castling_rights = undo_info.old_castling_rights;
+        self.en_passant_target = undo_info.old_en_passant_target;
+        self.halfmove_clock = undo_info.old_halfmove_clock;
+        self.zobrist_hash = undo_info.old_zobrist_hash;
+        self.white_king_in_check = undo_info.old_white_king_in_check;
+        self.black_king_in_check = undo_info.old_black_king_in_check;
+
+        // Inverte a cor do jogador
+        self.to_move = !self.to_move;
+
+        let from_bb = 1u64 << mv.from;
+        let to_bb = 1u64 << mv.to;
+        let moving_color = self.to_move; // Cor original da peça que se moveu
+
+        // Movimento normal: move a peça de volta
+        if moving_color == Color::White {
+            self.white_pieces ^= from_bb | to_bb;
+        } else {
+            self.black_pieces ^= from_bb | to_bb;
+        }
+
+        // Identifica e move a peça de volta
+        if (self.pawns & to_bb) != 0 {
+            self.pawns ^= from_bb | to_bb;
+        } else if (self.knights & to_bb) != 0 {
+            self.knights ^= from_bb | to_bb;
+        } else if (self.bishops & to_bb) != 0 {
+            self.bishops ^= from_bb | to_bb;
+        } else if (self.rooks & to_bb) != 0 {
+            self.rooks ^= from_bb | to_bb;
+        } else if (self.queens & to_bb) != 0 {
+            self.queens ^= from_bb | to_bb;
+        } else if (self.kings & to_bb) != 0 {
+            self.kings ^= from_bb | to_bb;
+        }
+
+        // Restaura peça capturada se houver
+        if let Some(captured_piece) = undo_info.captured_piece {
+            match captured_piece {
+                PieceKind::Pawn => self.pawns |= to_bb,
+                PieceKind::Knight => self.knights |= to_bb,
+                PieceKind::Bishop => self.bishops |= to_bb,
+                PieceKind::Rook => self.rooks |= to_bb,
+                PieceKind::Queen => self.queens |= to_bb,
+                PieceKind::King => self.kings |= to_bb,
+            }
+            
+            if moving_color == Color::White {
+                self.black_pieces |= to_bb;
+            } else {
+                self.white_pieces |= to_bb;
+            }
+        }
+    }
+
+    /// Identifica que peça foi capturada no movimento
+    fn get_captured_piece(&self, mv: Move) -> Option<PieceKind> {
+        let to_bb = 1u64 << mv.to;
+        let enemy_pieces = if self.to_move == Color::White { 
+            self.black_pieces 
+        } else { 
+            self.white_pieces 
+        };
+        
+        if (enemy_pieces & to_bb) == 0 {
+            return None; // Não há captura
+        }
+        
+        if (self.pawns & to_bb) != 0 {
+            Some(PieceKind::Pawn)
+        } else if (self.knights & to_bb) != 0 {
+            Some(PieceKind::Knight)
+        } else if (self.bishops & to_bb) != 0 {
+            Some(PieceKind::Bishop)
+        } else if (self.rooks & to_bb) != 0 {
+            Some(PieceKind::Rook)
+        } else if (self.queens & to_bb) != 0 {
+            Some(PieceKind::Queen)
+        } else if (self.kings & to_bb) != 0 {
+            Some(PieceKind::King)
+        } else {
+            None
+        }
     }
 }
