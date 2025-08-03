@@ -1,8 +1,10 @@
 use crate::core::*;
 use crate::engine::{TranspositionTable, TT_EXACT, TT_ALPHA, TT_BETA};
+use crate::search::{order_moves_advanced, KillerMoves, HistoryTable, quiescence_search};
 use std::time::{Duration, Instant};
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Resultado da busca Alpha-Beta
 #[derive(Debug, Clone)]
@@ -15,13 +17,16 @@ pub struct SearchResult {
     pub pv_line: Vec<Move>,
 }
 
-/// Motor Alpha-Beta com TT e multi-core (baseado no padrão perft)
+/// Motor Alpha-Beta com TT compartilhada e otimizações avançadas
 pub struct AlphaBetaTTEngine {
     pub nodes_searched: AtomicU64,
     pub start_time: Option<Instant>,
     pub max_time: Option<Duration>,
     pub should_stop: AtomicBool,
     pub threads: usize,
+    pub tt: Arc<Mutex<TranspositionTable>>, // TT compartilhada
+    pub killers: KillerMoves,
+    pub history: HistoryTable,
 }
 
 impl AlphaBetaTTEngine {
