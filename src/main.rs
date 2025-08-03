@@ -287,7 +287,7 @@ fn handle_position_command(board: &mut Board, commands: &[&str], _tt: &mut Perft
 }
 
 fn handle_go_command(board: &Board, _tt: &mut PerftTT, _use_opening_book: bool, commands: &[&str], _moves_played: u16, threads: usize) {
-    let mut depth = 6; // Profundidade padrão
+    let mut depth = 15; // Profundidade padrão ALTA para motor inteligente
     let mut time_limit = None;
     
     // Parse dos parâmetros go

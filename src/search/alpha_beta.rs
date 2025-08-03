@@ -1,5 +1,6 @@
 use crate::core::*;
 use super::evaluation::*;
+use super::move_ordering::*;
 use std::time::{Duration, Instant};
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -12,6 +13,7 @@ pub struct SearchResult {
     pub depth: u8,
     pub nodes_searched: u64,
     pub time_elapsed: Duration,
+    pub pv_line: Vec<Move>, // Linha principal completa
 }
 
 /// Motor de busca Alpha-Beta
@@ -58,6 +60,7 @@ impl AlphaBetaEngine {
             depth: 0,
             nodes_searched: 0,
             time_elapsed: Duration::from_millis(0),
+            pv_line: Vec::new(),
         };
         
         // Busca iterativa por profundidade
@@ -67,7 +70,7 @@ impl AlphaBetaEngine {
             }
             
             let depth_start_time = Instant::now();
-            let (best_move, score) = self.alpha_beta_root_parallel(board, depth);
+            let (best_move, score, pv_line) = self.alpha_beta_root_parallel(board, depth);
             let depth_time = depth_start_time.elapsed();
             
             best_result = SearchResult {
@@ -76,10 +79,11 @@ impl AlphaBetaEngine {
                 depth,
                 nodes_searched: self.nodes_searched.load(Ordering::Relaxed),
                 time_elapsed: self.start_time.unwrap().elapsed(),
+                pv_line: pv_line.clone(),
             };
             
             // Imprime linha de pensamento para esta profundidade
-            self.print_thinking_line(&best_result, best_move);
+            self.print_thinking_line(&best_result);
             
             // Se encontrou mate, para a busca
             if score.abs() > 29000 {
@@ -97,12 +101,12 @@ impl AlphaBetaEngine {
         self.should_stop.store(false, Ordering::Relaxed);
         self.start_time = Some(Instant::now());
         
-        // Se profundidade for alta, usa busca iterativa
-        if depth > 3 {
+        // SEMPRE usa busca iterativa para profundidades > 1 (máxima inteligência)
+        if depth > 1 {
             return self.search_time(board, Duration::from_secs(3600), depth); // 1 hora como limite máximo
         }
         
-        let (best_move, score) = self.alpha_beta_root_parallel(board, depth);
+        let (best_move, score, pv_line) = self.alpha_beta_root_parallel(board, depth);
         
         let result = SearchResult {
             best_move,
@@ -110,28 +114,44 @@ impl AlphaBetaEngine {
             depth,
             nodes_searched: self.nodes_searched.load(Ordering::Relaxed),
             time_elapsed: self.start_time.unwrap().elapsed(),
+            pv_line,
         };
         
         // Imprime linha de pensamento
-        self.print_thinking_line(&result, best_move);
+        self.print_thinking_line(&result);
         
         result
     }
     
-    /// Imprime linha de pensamento UCI
-    fn print_thinking_line(&self, result: &SearchResult, best_move: Option<Move>) {
+    /// Imprime linha de pensamento UCI com PV completa
+    fn print_thinking_line(&self, result: &SearchResult) {
         let nps = if result.time_elapsed.as_millis() > 0 {
             (result.nodes_searched as f64 / result.time_elapsed.as_secs_f64()) as u64
         } else {
             0
         };
         let time_ms = result.time_elapsed.as_millis();
-        let score_output = format!("score cp {}", result.score);
         
-        let pv = if let Some(mv) = best_move {
-            format!("pv {}", self.format_uci_move(mv))
+        // Formata score (centipawns ou mate)
+        let score_output = if result.score.abs() > 29000 {
+            let mate_in = (30000 - result.score.abs()) / 2 + 1;
+            if result.score > 0 {
+                format!("score mate {}", mate_in)
+            } else {
+                format!("score mate -{}", mate_in)
+            }
         } else {
+            format!("score cp {}", result.score)
+        };
+        
+        // Constrói PV line completa
+        let pv = if result.pv_line.is_empty() {
             "pv".to_string()
+        } else {
+            let pv_moves: Vec<String> = result.pv_line.iter()
+                .map(|mv| self.format_uci_move(*mv))
+                .collect();
+            format!("pv {}", pv_moves.join(" "))
         };
         
         println!("info depth {} {} nodes {} nps {} time {} hashfull {} tbhits {} multipv {} {}", 
@@ -143,7 +163,7 @@ impl AlphaBetaEngine {
                  0, // hashfull
                  0, // tbhits
                  1, // multipv
-                 pv // linha principal
+                 pv // linha principal completa
         );
     }
     
@@ -173,21 +193,24 @@ impl AlphaBetaEngine {
         result
     }
     
-    /// Busca Alpha-Beta na raiz (paralela)
-    fn alpha_beta_root_parallel(&self, board: &Board, depth: u8) -> (Option<Move>, i32) {
-        let moves = board.generate_legal_moves();
+    /// Busca Alpha-Beta na raiz (paralela com ordenação inteligente)
+    fn alpha_beta_root_parallel(&self, board: &Board, depth: u8) -> (Option<Move>, i32, Vec<Move>) {
+        let mut moves = board.generate_legal_moves();
         
         if moves.is_empty() {
-            return (None, evaluate_position(board));
+            return (None, evaluate_position(board), Vec::new());
         }
         
-        if depth <= 2 {
-            // Use versão sequencial para profundidades baixas
-            return self.alpha_beta_root_sequential(board, depth);
+        // ORDENAÇÃO INTELIGENTE para máxima performance
+        order_moves(board, &mut moves);
+        
+        if depth <= 1 {
+            // Use versão sequencial apenas para depth 1
+            return self.alpha_beta_root_sequential(board, depth, &moves);
         }
         
-        // Paraleliza apenas no primeiro nível, igual ao perft_parallel
-        let results: Vec<(Move, i32)> = moves.par_iter().filter_map(|&mv| {
+        // PARALELIZAÇÃO MASSIVA - cada movimento em thread separada
+        let results: Vec<(Move, i32, Vec<Move>)> = moves.par_iter().filter_map(|&mv| {
             if self.should_stop() {
                 return None;
             }
@@ -197,37 +220,45 @@ impl AlphaBetaEngine {
             let previous_to_move = !board_clone.to_move;
             
             if !board_clone.is_king_in_check(previous_to_move) {
-                let score = -self.alpha_beta_sequential(&board_clone, depth - 1, i32::MIN, i32::MAX, false);
-                board_clone.unmake_move(mv, undo_info); // Cleanup (opcional, pois board_clone será descartado)
-                Some((mv, score))
+                // QUIESCENCE SEARCH integrada para táticas
+                let (score, mut pv_line) = if depth >= 3 {
+                    self.alpha_beta_with_pv(&board_clone, depth - 1, i32::MIN, i32::MAX, false)
+                } else {
+                    self.alpha_beta_with_pv(&board_clone, depth - 1, i32::MIN, i32::MAX, false)
+                };
+                
+                // Adiciona movimento atual no início da PV
+                pv_line.insert(0, mv);
+                
+                board_clone.unmake_move(mv, undo_info);
+                Some((mv, -score, pv_line))
             } else {
                 board_clone.unmake_move(mv, undo_info);
                 None
             }
         }).collect();
         
-        // Encontra o melhor movimento
-        if let Some((best_move, best_score)) = results.into_iter().max_by_key(|(_, score)| *score) {
-            (Some(best_move), best_score)
+        // Encontra o melhor movimento com PV
+        if let Some((best_move, best_score, pv_line)) = results.into_iter().max_by_key(|(_, score, _)| *score) {
+            (Some(best_move), best_score, pv_line)
         } else {
-            (None, i32::MIN)
+            (None, i32::MIN, Vec::new())
         }
     }
     
-    /// Busca Alpha-Beta na raiz (sequencial)
-    fn alpha_beta_root_sequential(&self, board: &Board, depth: u8) -> (Option<Move>, i32) {
-        let moves = board.generate_legal_moves();
-        
+    /// Busca Alpha-Beta na raiz (sequencial com ordenação)
+    fn alpha_beta_root_sequential(&self, board: &Board, depth: u8, moves: &[Move]) -> (Option<Move>, i32, Vec<Move>) {
         if moves.is_empty() {
-            return (None, evaluate_position(board));
+            return (None, evaluate_position(board), Vec::new());
         }
         
         let mut best_move = None;
         let mut best_score = i32::MIN;
+        let mut best_pv = Vec::new();
         let mut alpha = i32::MIN;
         let beta = i32::MAX;
         
-        for mv in moves {
+        for &mv in moves {
             if self.should_stop() {
                 break;
             }
@@ -237,24 +268,35 @@ impl AlphaBetaEngine {
             let previous_to_move = !board_clone.to_move;
             
             if !board_clone.is_king_in_check(previous_to_move) {
-                let score = -self.alpha_beta_sequential(&board_clone, depth - 1, -beta, -alpha, false);
+                let (score, mut pv_line) = self.alpha_beta_with_pv(&board_clone, depth - 1, -beta, -alpha, false);
+                let score = -score;
                 
                 if score > best_score {
                     best_score = score;
                     best_move = Some(mv);
+                    
+                    // Constrói PV completa
+                    best_pv = vec![mv];
+                    best_pv.extend(pv_line);
                 }
                 
                 alpha = alpha.max(score);
+                
+                // Alpha-Beta cutoff
+                if beta <= alpha {
+                    board_clone.unmake_move(mv, undo_info);
+                    break;
+                }
             }
             
             board_clone.unmake_move(mv, undo_info);
         }
         
-        (best_move, best_score)
+        (best_move, best_score, best_pv)
     }
     
     
-    /// Algoritmo Alpha-Beta sequencial (igual ao perft_with_tt)
+    /// Algoritmo Alpha-Beta sequencial com ordenação inteligente
     fn alpha_beta_sequential(&self, board: &Board, depth: u8, mut alpha: i32, mut beta: i32, is_maximizing: bool) -> i32 {
         self.nodes_searched.fetch_add(1, Ordering::Relaxed);
         
@@ -268,27 +310,26 @@ impl AlphaBetaEngine {
             return if is_maximizing { terminal_score } else { -terminal_score };
         }
         
-        // Se chegou na profundidade limite, avalia posição
+        // Se chegou na profundidade limite, usa quiescence search para táticas
         if depth == 0 {
-            return if is_maximizing {
-                evaluate_position(board)
-            } else {
-                -evaluate_position(board)
-            };
+            return self.quiescence_search(board, alpha, beta, is_maximizing, 4);
         }
         
-        let moves = board.generate_legal_moves();
+        let mut moves = board.generate_legal_moves();
         
         if moves.is_empty() {
             // Não há movimentos legais (mate ou afogamento)
             if board.is_king_in_check(board.to_move) {
-                // Xeque-mate
+                // Xeque-mate - mais próximo é melhor
                 return if is_maximizing { -30000 + depth as i32 } else { 30000 - depth as i32 };
             } else {
                 // Afogamento
                 return 0;
             }
         }
+        
+        // ORDENAÇÃO INTELIGENTE para máximas podas
+        order_moves(board, &mut moves);
         
         if is_maximizing {
             let mut max_eval = i32::MIN;
@@ -349,6 +390,194 @@ impl AlphaBetaEngine {
         }
     }
     
+    /// Alpha-Beta com Quiescence Search integrada
+    fn alpha_beta_with_quiescence(&self, board: &Board, depth: u8, mut alpha: i32, mut beta: i32, is_maximizing: bool) -> i32 {
+        if depth == 0 {
+            return self.quiescence_search(board, alpha, beta, is_maximizing, 6);
+        }
+        
+        self.alpha_beta_sequential(board, depth, alpha, beta, is_maximizing)
+    }
+    
+    /// Quiescence Search - busca apenas capturas e xeques para evitar horizon effect
+    fn quiescence_search(&self, board: &Board, mut alpha: i32, mut beta: i32, is_maximizing: bool, qs_depth: u8) -> i32 {
+        self.nodes_searched.fetch_add(1, Ordering::Relaxed);
+        
+        if self.should_stop() || qs_depth == 0 {
+            return if is_maximizing {
+                evaluate_position(board)
+            } else {
+                -evaluate_position(board)
+            };
+        }
+        
+        // Stand-pat: avaliação estática
+        let stand_pat = if is_maximizing {
+            evaluate_position(board)
+        } else {
+            -evaluate_position(board)
+        };
+        
+        if is_maximizing {
+            alpha = alpha.max(stand_pat);
+            if beta <= alpha {
+                return alpha; // Beta cutoff
+            }
+        } else {
+            beta = beta.min(stand_pat);
+            if beta <= alpha {
+                return beta; // Alpha cutoff  
+            }
+        }
+        
+        // Gera apenas capturas e xeques (movimentos "ruidosos")
+        let tactical_moves = generate_tactical_moves(board);
+        
+        for mv in tactical_moves {
+            if self.should_stop() {
+                break;
+            }
+            
+            let mut board_clone = *board;
+            let undo_info = board_clone.make_move_with_undo(mv);
+            let previous_to_move = !board_clone.to_move;
+            
+            if !board_clone.is_king_in_check(previous_to_move) {
+                let score = self.quiescence_search(&board_clone, alpha, beta, !is_maximizing, qs_depth - 1);
+                
+                if is_maximizing {
+                    alpha = alpha.max(score);
+                    if beta <= alpha {
+                        board_clone.unmake_move(mv, undo_info);
+                        break;
+                    }
+                } else {
+                    beta = beta.min(score);
+                    if beta <= alpha {
+                        board_clone.unmake_move(mv, undo_info);
+                        break;
+                    }
+                }
+            }
+            
+            board_clone.unmake_move(mv, undo_info);
+        }
+        
+        if is_maximizing { alpha } else { beta }
+    }
+    
+    /// Alpha-Beta que retorna score e PV line
+    fn alpha_beta_with_pv(&self, board: &Board, depth: u8, mut alpha: i32, mut beta: i32, is_maximizing: bool) -> (i32, Vec<Move>) {
+        self.nodes_searched.fetch_add(1, Ordering::Relaxed);
+        
+        if self.should_stop() {
+            return (0, Vec::new());
+        }
+        
+        // Verifica posição terminal
+        if let Some(terminal_score) = is_terminal_position(board) {
+            let score = if is_maximizing { terminal_score } else { -terminal_score };
+            return (score, Vec::new());
+        }
+        
+        // Se chegou na profundidade limite, usa quiescence search
+        if depth == 0 {
+            let score = self.quiescence_search(board, alpha, beta, is_maximizing, 4);
+            return (score, Vec::new());
+        }
+        
+        let mut moves = board.generate_legal_moves();
+        
+        if moves.is_empty() {
+            // Não há movimentos legais (mate ou afogamento)
+            if board.is_king_in_check(board.to_move) {
+                let score = if is_maximizing { -30000 + depth as i32 } else { 30000 - depth as i32 };
+                return (score, Vec::new());
+            } else {
+                return (0, Vec::new()); // Afogamento
+            }
+        }
+        
+        // ORDENAÇÃO INTELIGENTE para máximas podas
+        order_moves(board, &mut moves);
+        
+        let mut best_pv = Vec::new();
+        
+        if is_maximizing {
+            let mut max_eval = i32::MIN;
+            
+            for mv in moves {
+                if self.should_stop() {
+                    break;
+                }
+                
+                let mut board_clone = *board;
+                let undo_info = board_clone.make_move_with_undo(mv);
+                let previous_to_move = !board_clone.to_move;
+                
+                if !board_clone.is_king_in_check(previous_to_move) {
+                    let (eval, mut pv_line) = self.alpha_beta_with_pv(&board_clone, depth - 1, alpha, beta, false);
+                    
+                    if eval > max_eval {
+                        max_eval = eval;
+                        
+                        // Atualiza melhor PV
+                        best_pv = vec![mv];
+                        best_pv.extend(pv_line);
+                    }
+                    
+                    alpha = alpha.max(eval);
+                    
+                    // Poda Alpha-Beta
+                    if beta <= alpha {
+                        board_clone.unmake_move(mv, undo_info);
+                        break;
+                    }
+                }
+                
+                board_clone.unmake_move(mv, undo_info);
+            }
+            
+            (max_eval, best_pv)
+        } else {
+            let mut min_eval = i32::MAX;
+            
+            for mv in moves {
+                if self.should_stop() {
+                    break;
+                }
+                
+                let mut board_clone = *board;
+                let undo_info = board_clone.make_move_with_undo(mv);
+                let previous_to_move = !board_clone.to_move;
+                
+                if !board_clone.is_king_in_check(previous_to_move) {
+                    let (eval, mut pv_line) = self.alpha_beta_with_pv(&board_clone, depth - 1, alpha, beta, true);
+                    
+                    if eval < min_eval {
+                        min_eval = eval;
+                        
+                        // Atualiza melhor PV
+                        best_pv = vec![mv];
+                        best_pv.extend(pv_line);
+                    }
+                    
+                    beta = beta.min(eval);
+                    
+                    // Poda Alpha-Beta
+                    if beta <= alpha {
+                        board_clone.unmake_move(mv, undo_info);
+                        break;
+                    }
+                }
+                
+                board_clone.unmake_move(mv, undo_info);
+            }
+            
+            (min_eval, best_pv)
+        }
+    }
+    
     /// Verifica se deve parar a busca (por tempo)
     fn should_stop(&self) -> bool {
         if let (Some(start), Some(max_time)) = (self.start_time, self.max_time) {
@@ -375,4 +604,51 @@ pub fn find_best_move(board: &Board, depth: u8) -> SearchResult {
 pub fn find_best_move_time(board: &Board, time_limit: Duration, max_depth: u8) -> SearchResult {
     let mut engine = AlphaBetaEngine::new();
     engine.search_time(board, time_limit, max_depth)
+}
+
+/// Gera apenas movimentos táticos (capturas, promoções, xeques) para quiescence search
+fn generate_tactical_moves(board: &Board) -> Vec<Move> {
+    let all_moves = board.generate_legal_moves();
+    let enemy_pieces = if board.to_move == Color::White {
+        board.black_pieces
+    } else {
+        board.white_pieces
+    };
+    
+    let mut tactical_moves = Vec::with_capacity(all_moves.len() / 2);
+    
+    for mv in all_moves {
+        let to_bb = 1u64 << mv.to;
+        
+        // Capturas
+        if (enemy_pieces & to_bb) != 0 {
+            tactical_moves.push(mv);
+            continue;
+        }
+        
+        // Promoções
+        if mv.promotion.is_some() {
+            tactical_moves.push(mv);
+            continue;
+        }
+        
+        // En passant
+        if mv.is_en_passant {
+            tactical_moves.push(mv);
+            continue;
+        }
+        
+        // Xeques (verifica se o movimento dá xeque)
+        let mut test_board = *board;
+        if test_board.make_move(mv) {
+            let enemy_color = !board.to_move;
+            if test_board.is_king_in_check(enemy_color) {
+                tactical_moves.push(mv);
+            }
+        }
+    }
+    
+    // Ordena movimentos táticos por valor
+    order_moves(board, &mut tactical_moves);
+    tactical_moves
 }
