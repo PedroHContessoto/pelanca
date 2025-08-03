@@ -146,11 +146,11 @@ impl AlphaBetaTTEngine {
             let previous_to_move = !board_clone.to_move;
             
             if !board_clone.is_king_in_check(previous_to_move) {
-                let (score, mut pv_line) = self.alpha_beta_with_shared_tt(&board_clone, depth - 1, i32::MIN, i32::MAX, false, &shared_tt);
+                let (score, mut pv_line) = self.negamax(&board_clone, depth - 1, i32::MIN, i32::MAX, &shared_tt);
                 
                 pv_line.insert(0, mv);
                 board_clone.unmake_move(mv, undo_info);
-                Some((mv, -score, pv_line))
+                Some((mv, -score, pv_line))  // Nega o score do filho
             } else {
                 board_clone.unmake_move(mv, undo_info);
                 None
@@ -193,8 +193,8 @@ impl AlphaBetaTTEngine {
             let previous_to_move = !board_clone.to_move;
             
             if !board_clone.is_king_in_check(previous_to_move) {
-                let (score, pv_line) = self.alpha_beta_with_shared_tt(&board_clone, depth - 1, -beta, -alpha, false, &shared_tt);
-                let score = -score;
+                let (score, pv_line) = self.negamax(&board_clone, depth - 1, -beta, -alpha, &shared_tt);
+                let score = -score;  // Nega o score do filho
                 
                 if score > best_score {
                     best_score = score;
@@ -218,207 +218,173 @@ impl AlphaBetaTTEngine {
         (best_move, best_score, best_pv)
     }
     
-    /// Alpha-Beta com TT compartilhada (thread-safe)
-    fn alpha_beta_with_shared_tt(&self, board: &Board, depth: u8, mut alpha: i32, mut beta: i32, is_maximizing: bool, shared_tt: &Arc<Mutex<TranspositionTable>>) -> (i32, Vec<Move>) {
+    /// Negamax com TT compartilhada integrada - performance e hashfull > 0
+    fn negamax(&self, board: &Board, depth: u8, mut alpha: i32, beta: i32, shared_tt: &Arc<Mutex<TranspositionTable>>) -> (i32, Vec<Move>) {
         self.nodes_searched.fetch_add(1, Ordering::Relaxed);
         
         if self.should_stop() {
             return (0, Vec::new());
         }
         
+        let original_alpha = alpha;
+        let zobrist_hash = board.zobrist_hash;
+        
+        // ========== TT PROBE ==========
+        if let Ok(mut tt_guard) = shared_tt.try_lock() {
+            if let Some(tt_score) = tt_guard.probe(zobrist_hash, depth, alpha, beta) {
+                return (tt_score, Vec::new());  // TT hit - retorna imediatamente
+            }
+        }
+        
         if depth == 0 {
-            // QUIESCENCE SEARCH: Explora capturas além da profundidade
-            let score = if is_maximizing {
-                self.quiescence_search(board, alpha, beta, 6)
-            } else {
-                -self.quiescence_search(board, -beta, -alpha, 6)
-            };
-            return (score, Vec::new());
+            return (self.quiescence_search(board, alpha, beta, 6), Vec::new());
         }
         
         let moves = board.generate_legal_moves();
         
         if moves.is_empty() {
             let score = if board.is_king_in_check(board.to_move) {
-                if is_maximizing { -30000 + depth as i32 } else { 30000 - depth as i32 }
+                -30000 + depth as i32  // Mate em 'depth' movimentos
             } else {
-                0
+                0  // Stalemate
             };
             return (score, Vec::new());
         }
         
+        let mut best_score = i32::MIN;
         let mut best_pv = Vec::new();
+        let mut best_move = None;
         
-        if is_maximizing {
-            let mut max_eval = i32::MIN;
-            
-            for mv in moves {
-                if self.should_stop() {
-                    break;
-                }
-                
-                let mut board_clone = *board;
-                let undo_info = board_clone.make_move_with_undo(mv);
-                let previous_to_move = !board_clone.to_move;
-                
-                if !board_clone.is_king_in_check(previous_to_move) {
-                    let (eval, pv_line) = self.alpha_beta_with_shared_tt(&board_clone, depth - 1, alpha, beta, false, shared_tt);
-                    
-                    if eval > max_eval {
-                        max_eval = eval;
-                        best_pv = vec![mv];
-                        best_pv.extend(pv_line);
-                    }
-                    
-                    alpha = alpha.max(eval);
-                    
-                    if beta <= alpha {
-                        board_clone.unmake_move(mv, undo_info);
-                        break;
-                    }
-                }
-                
-                board_clone.unmake_move(mv, undo_info);
+        // Ordena movimentos (inclui TT move se disponível)
+        let mut ordered_moves = moves;
+        self.order_moves_with_tt(board, &mut ordered_moves, shared_tt);
+        
+        for &mv in &ordered_moves {
+            if self.should_stop() {
+                break;
             }
             
-            (max_eval, best_pv)
-        } else {
-            let mut min_eval = i32::MAX;
+            let mut board_clone = *board;
+            let undo_info = board_clone.make_move_with_undo(mv);
+            let previous_to_move = !board_clone.to_move;
             
-            for mv in moves {
-                if self.should_stop() {
-                    break;
-                }
-                
-                let mut board_clone = *board;
-                let undo_info = board_clone.make_move_with_undo(mv);
-                let previous_to_move = !board_clone.to_move;
-                
-                if !board_clone.is_king_in_check(previous_to_move) {
-                    let (eval, pv_line) = self.alpha_beta_with_shared_tt(&board_clone, depth - 1, alpha, beta, true, shared_tt);
-                    
-                    if eval < min_eval {
-                        min_eval = eval;
-                        best_pv = vec![mv];
-                        best_pv.extend(pv_line);
-                    }
-                    
-                    beta = beta.min(eval);
-                    
-                    if beta <= alpha {
-                        board_clone.unmake_move(mv, undo_info);
-                        break;
-                    }
-                }
+            if !board_clone.is_king_in_check(previous_to_move) {
+                let (score, mut pv_line) = self.negamax(&board_clone, depth - 1, -beta, -alpha, shared_tt);
+                let score = -score;  // Negamax: sempre nega o score do filho
                 
                 board_clone.unmake_move(mv, undo_info);
-            }
-            
-            (min_eval, best_pv)
-        }
-    }
-    
-    /// Alpha-Beta com TT local (para comparação)
-    fn alpha_beta_with_tt(&self, board: &Board, depth: u8, mut alpha: i32, mut beta: i32, is_maximizing: bool, tt: &mut TranspositionTable) -> (i32, Vec<Move>) {
-        self.nodes_searched.fetch_add(1, Ordering::Relaxed);
-        
-        if self.should_stop() {
-            return (0, Vec::new());
-        }
-        
-        if depth == 0 {
-            // QUIESCENCE SEARCH: Explora capturas além da profundidade
-            let score = if is_maximizing {
-                self.quiescence_search(board, alpha, beta, 6)
+                
+                if score > best_score {
+                    best_score = score;
+                    best_move = Some(mv);
+                    best_pv = vec![mv];
+                    best_pv.append(&mut pv_line);
+                }
+                
+                alpha = alpha.max(score);
+                
+                if alpha >= beta {
+                    break;  // Alpha-beta cutoff
+                }
             } else {
-                -self.quiescence_search(board, -beta, -alpha, 6)
-            };
-            return (score, Vec::new());
+                board_clone.unmake_move(mv, undo_info);
+            }
         }
         
-        let moves = board.generate_legal_moves();
-        
-        if moves.is_empty() {
+        // Se nenhum movimento legal foi encontrado, retorna mate/stalemate
+        if best_score == i32::MIN {
             let score = if board.is_king_in_check(board.to_move) {
-                if is_maximizing { -30000 + depth as i32 } else { 30000 - depth as i32 }
+                -30000 + depth as i32
             } else {
                 0
             };
             return (score, Vec::new());
         }
         
-        let mut best_pv = Vec::new();
-        
-        if is_maximizing {
-            let mut max_eval = i32::MIN;
-            
-            for mv in moves {
-                if self.should_stop() {
-                    break;
-                }
-                
-                let mut board_clone = *board;
-                let undo_info = board_clone.make_move_with_undo(mv);
-                let previous_to_move = !board_clone.to_move;
-                
-                if !board_clone.is_king_in_check(previous_to_move) {
-                    let (eval, pv_line) = self.alpha_beta_with_tt(&board_clone, depth - 1, alpha, beta, false, tt);
-                    
-                    if eval > max_eval {
-                        max_eval = eval;
-                        best_pv = vec![mv];
-                        best_pv.extend(pv_line);
-                    }
-                    
-                    alpha = alpha.max(eval);
-                    
-                    if beta <= alpha {
-                        board_clone.unmake_move(mv, undo_info);
-                        break;
-                    }
-                }
-                
-                board_clone.unmake_move(mv, undo_info);
-            }
-            
-            (max_eval, best_pv)
+        // ========== TT STORE ==========
+        let tt_flag = if best_score <= original_alpha {
+            crate::engine::TT_ALPHA  // Upper bound
+        } else if best_score >= beta {
+            crate::engine::TT_BETA   // Lower bound
         } else {
-            let mut min_eval = i32::MAX;
-            
-            for mv in moves {
-                if self.should_stop() {
-                    break;
-                }
-                
-                let mut board_clone = *board;
-                let undo_info = board_clone.make_move_with_undo(mv);
-                let previous_to_move = !board_clone.to_move;
-                
-                if !board_clone.is_king_in_check(previous_to_move) {
-                    let (eval, pv_line) = self.alpha_beta_with_tt(&board_clone, depth - 1, alpha, beta, true, tt);
-                    
-                    if eval < min_eval {
-                        min_eval = eval;
-                        best_pv = vec![mv];
-                        best_pv.extend(pv_line);
-                    }
-                    
-                    beta = beta.min(eval);
-                    
-                    if beta <= alpha {
-                        board_clone.unmake_move(mv, undo_info);
-                        break;
-                    }
-                }
-                
-                board_clone.unmake_move(mv, undo_info);
-            }
-            
-            (min_eval, best_pv)
+            crate::engine::TT_EXACT  // Exact score
+        };
+        
+        if let Ok(mut tt_guard) = shared_tt.try_lock() {
+            tt_guard.store(zobrist_hash, depth, best_score, tt_flag, best_move);
         }
+        
+        (best_score, best_pv)
     }
     
-    /// Ordenação avançada MVV-LVA + heurísticas
+    
+    /// Ordenação com TT move prioritário + MVV-LVA + heurísticas
+    fn order_moves_with_tt(&self, board: &Board, moves: &mut Vec<Move>, shared_tt: &Arc<Mutex<TranspositionTable>>) {
+        // Busca TT move para priorizar
+        let tt_move = if let Ok(mut tt_guard) = shared_tt.try_lock() {
+            tt_guard.get_best_move(board.zobrist_hash)
+        } else {
+            None
+        };
+        
+        moves.sort_by_key(|&mv| {
+            let mut score = 0;
+            
+            // 0. TT MOVE - máxima prioridade
+            if let Some(tt_mv) = tt_move {
+                if mv.from == tt_mv.from && mv.to == tt_mv.to && mv.promotion == tt_mv.promotion {
+                    score += 100000;  // Prioridade máxima
+                }
+            }
+            
+            // 1. MVV-LVA COMPLETO para capturas
+            if self.is_capture(board, mv) {
+                let victim_value = self.get_piece_value(board, mv.to);
+                let attacker_value = self.get_piece_value(board, mv.from);
+                
+                // MVV-LVA: Most Valuable Victim - Least Valuable Attacker
+                score += 10000 + (victim_value * 10) - attacker_value;
+                
+                // Bônus para capturas que ganham material
+                if victim_value >= attacker_value {
+                    score += 1000;
+                }
+            }
+            
+            // 2. Promoções (especialmente para dama)
+            if let Some(promotion) = mv.promotion {
+                score += match promotion {
+                    PieceKind::Queen => 9000,
+                    PieceKind::Rook => 5000,
+                    PieceKind::Bishop => 3300,
+                    PieceKind::Knight => 3200,
+                    _ => 1000,
+                };
+            }
+            
+            // 3. Xeques (podem forçar respostas)
+            if self.gives_check_fast(board, mv) {
+                score += 200;
+            }
+            
+            // 4. Controle do centro expandido
+            score += self.center_control_score(mv);
+            
+            // 5. Desenvolvimento de peças
+            if self.is_development_move(board, mv) {
+                score += 100;
+            }
+            
+            // 6. Roque (segurança do rei)
+            if mv.is_castling {
+                score += 150;
+            }
+            
+            -score // Ordem decrescente
+        });
+    }
+    
+    /// Ordenação avançada MVV-LVA + heurísticas (sem TT)
     fn order_moves_basic(&self, board: &Board, moves: &mut Vec<Move>) {
         moves.sort_by_key(|&mv| {
             let mut score = 0;
