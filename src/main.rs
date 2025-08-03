@@ -339,17 +339,7 @@ fn handle_go_command(board: &Board, _tt: &mut PerftTT, _use_opening_book: bool, 
         engine.search(board, depth)
     };
     
-    // Reporta informações da busca
-    println!("info depth {} score cp {} nodes {} time {} nps {}", 
-             result.depth,
-             result.score,
-             result.nodes_searched,
-             result.time_elapsed.as_millis(),
-             if result.time_elapsed.as_millis() > 0 {
-                 (result.nodes_searched as f64 / result.time_elapsed.as_secs_f64()) as u64
-             } else {
-                 0
-             });
+    // O engine já imprime as linhas de pensamento durante a busca
     
     // Envia melhor movimento
     if let Some(best_move) = result.best_move {

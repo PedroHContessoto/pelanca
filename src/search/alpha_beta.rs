@@ -44,24 +44,8 @@ impl AlphaBetaEngine {
         }
     }
     
-    /// Busca o melhor movimento com limite de profundidade
-    pub fn search(&mut self, board: &Board, depth: u8) -> SearchResult {
-        self.nodes_searched.store(0, Ordering::Relaxed);
-        self.should_stop.store(false, Ordering::Relaxed);
-        self.start_time = Some(Instant::now());
-        
-        let (best_move, score) = self.alpha_beta_root_parallel(board, depth);
-        
-        SearchResult {
-            best_move,
-            score,
-            depth,
-            nodes_searched: self.nodes_searched.load(Ordering::Relaxed),
-            time_elapsed: self.start_time.unwrap().elapsed(),
-        }
-    }
     
-    /// Busca com limite de tempo
+    /// Busca com limite de tempo (com linha de pensamento completa)
     pub fn search_time(&mut self, board: &Board, max_time: Duration, max_depth: u8) -> SearchResult {
         self.nodes_searched.store(0, Ordering::Relaxed);
         self.should_stop.store(false, Ordering::Relaxed);
@@ -82,7 +66,9 @@ impl AlphaBetaEngine {
                 break;
             }
             
+            let depth_start_time = Instant::now();
             let (best_move, score) = self.alpha_beta_root_parallel(board, depth);
+            let depth_time = depth_start_time.elapsed();
             
             best_result = SearchResult {
                 best_move,
@@ -92,6 +78,9 @@ impl AlphaBetaEngine {
                 time_elapsed: self.start_time.unwrap().elapsed(),
             };
             
+            // Imprime linha de pensamento para esta profundidade
+            self.print_thinking_line(&best_result, best_move);
+            
             // Se encontrou mate, para a busca
             if score.abs() > 29000 {
                 break;
@@ -100,6 +89,88 @@ impl AlphaBetaEngine {
         
         self.max_time = None;
         best_result
+    }
+    
+    /// Busca o melhor movimento com limite de profundidade (com linha de pensamento)
+    pub fn search(&mut self, board: &Board, depth: u8) -> SearchResult {
+        self.nodes_searched.store(0, Ordering::Relaxed);
+        self.should_stop.store(false, Ordering::Relaxed);
+        self.start_time = Some(Instant::now());
+        
+        // Se profundidade for alta, usa busca iterativa
+        if depth > 3 {
+            return self.search_time(board, Duration::from_secs(3600), depth); // 1 hora como limite máximo
+        }
+        
+        let (best_move, score) = self.alpha_beta_root_parallel(board, depth);
+        
+        let result = SearchResult {
+            best_move,
+            score,
+            depth,
+            nodes_searched: self.nodes_searched.load(Ordering::Relaxed),
+            time_elapsed: self.start_time.unwrap().elapsed(),
+        };
+        
+        // Imprime linha de pensamento
+        self.print_thinking_line(&result, best_move);
+        
+        result
+    }
+    
+    /// Imprime linha de pensamento UCI
+    fn print_thinking_line(&self, result: &SearchResult, best_move: Option<Move>) {
+        let nps = if result.time_elapsed.as_millis() > 0 {
+            (result.nodes_searched as f64 / result.time_elapsed.as_secs_f64()) as u64
+        } else {
+            0
+        };
+        let time_ms = result.time_elapsed.as_millis();
+        let score_output = format!("score cp {}", result.score);
+        
+        let pv = if let Some(mv) = best_move {
+            format!("pv {}", self.format_uci_move(mv))
+        } else {
+            "pv".to_string()
+        };
+        
+        println!("info depth {} {} nodes {} nps {} time {} hashfull {} tbhits {} multipv {} {}", 
+                 result.depth, 
+                 score_output, 
+                 result.nodes_searched, 
+                 nps, 
+                 time_ms,
+                 0, // hashfull
+                 0, // tbhits
+                 1, // multipv
+                 pv // linha principal
+        );
+    }
+    
+    /// Formata movimento para UCI
+    fn format_uci_move(&self, mv: Move) -> String {
+        let from_file = (mv.from % 8) as u8 + b'a';
+        let from_rank = (mv.from / 8) as u8 + b'1';
+        let to_file = (mv.to % 8) as u8 + b'a';
+        let to_rank = (mv.to / 8) as u8 + b'1';
+        
+        let mut result = format!("{}{}{}{}", 
+                                from_file as char, 
+                                from_rank as char,
+                                to_file as char, 
+                                to_rank as char);
+        
+        if let Some(promotion) = mv.promotion {
+            result.push(match promotion {
+                PieceKind::Queen => 'q',
+                PieceKind::Rook => 'r',
+                PieceKind::Bishop => 'b',
+                PieceKind::Knight => 'n',
+                _ => 'q',
+            });
+        }
+        
+        result
     }
     
     /// Busca Alpha-Beta na raiz (paralela)
