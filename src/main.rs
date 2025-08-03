@@ -1,9 +1,8 @@
-// Motor de Xadrez - Teste de Validação e Performance
+// Motor de Xadrez - Teste Alpha-Beta com TT
 use pelanca::*;
-use std::time::Instant;
-use rayon::prelude::*;
+use std::time::{Instant, Duration};
 
-use pelanca::engine::PerftTT;
+use pelanca::search::AlphaBetaTTEngine;
 
 fn main() {
     println!("=== TESTE DE VALIDAÇÃO DE MOVIMENTOS ===\n");
@@ -20,9 +19,9 @@ fn main() {
         println!();
     }
 
-    // Teste paralelo para profundidades altas
-    println!("\n=== TESTE PARALELO (DEPTH 8) ===");
-    perft("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 8);
+    // Teste Alpha-Beta
+    println!("\n=== TESTE ALPHA-BETA ===");
+    test_alpha_beta();
 }
 
 fn test_position(name: &str, fen: &str) {
@@ -107,90 +106,54 @@ fn is_valid_move(board: &Board, mv: &Move) -> bool {
     true
 }
 
-
-fn perft(fen: &str, max_depth: u8) {
-    match Board::from_fen(fen) {
-        Ok(mut board) => {
-            let available_cores = num_cpus::get().saturating_sub(1);
-            println!("FEN: {}", fen);
-            println!("Jogador: {:?}\n", board.to_move);
-            println!("Cores disponíveis: {}\n", available_cores);
-
-            for depth in 1..=max_depth {
-                let start = Instant::now();
-                let nodes = perft_parallel(&mut board, depth);
-                let elapsed = start.elapsed();
-
-                println!("Paralelo Depth {}: {} nós em {:.2}ms ({:.0} nós/seg)",
-                         depth,
-                         nodes,
-                         elapsed.as_millis(),
-                         nodes as f64 / elapsed.as_secs_f64());
+fn test_alpha_beta() {
+    println!("Testando Alpha-Beta com TT e multi-core...\n");
+    
+    let test_positions = [
+        ("Posição inicial", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
+        ("Posição tática", "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1"),
+    ];
+    
+    for (name, fen) in test_positions.iter() {
+        println!("🎯 {}", name);
+        
+        match Board::from_fen(fen) {
+            Ok(board) => {
+                println!("FEN: {}", fen);
+                println!("Jogador: {:?}", board.to_move);
+                
+                // Teste busca rápida (depth 6)
+                let mut engine = AlphaBetaTTEngine::new();
+                let result = engine.search(&board, 6);
+                
+                if let Some(best_move) = result.best_move {
+                    println!("✅ Melhor movimento: {}", format_move_simple(best_move));
+                    println!("   Score: {} centipawns", result.score);
+                    println!("   Nodes: {}", result.nodes_searched);
+                    println!("   Tempo: {:.2}ms", result.time_elapsed.as_millis());
+                    println!("   NPS: {:.0}", result.nodes_searched as f64 / result.time_elapsed.as_secs_f64());
+                } else {
+                    println!("❌ Nenhum movimento encontrado");
+                }
+            }
+            Err(e) => {
+                println!("❌ Erro ao carregar FEN: {}", e);
             }
         }
-        Err(e) => {
-            println!("❌ Erro ao carregar FEN: {}", e);
-        }
+        
+        println!();
     }
 }
 
-fn perft_with_tt(board: &mut Board, depth: u8, tt: &mut PerftTT) -> u64 {
-    if depth == 0 {
-        return 1;
-    }
-
-    // Verifica cache primeiro
-    if let Some(cached_nodes) = tt.get(board.zobrist_hash, depth) {
-        return cached_nodes;
-    }
-
-    let moves = board.generate_all_moves(); // pseudo-legais
-
-    if depth == 1 {
-        // Bulk counting: Filtra legais sem make/unmake completo
-        let nodes = moves.iter()
-            .filter(|&&mv| board.is_legal_move(mv))
-            .count() as u64;
-        tt.insert(board.zobrist_hash, depth, nodes);
-        return nodes;
-    }
-
-    let mut nodes = 0;
-
-    for mv in moves {
-        let undo_info = board.make_move_with_undo(mv);
-
-        let previous_to_move = !board.to_move;
-        if !board.is_king_in_check(previous_to_move) {
-            nodes += perft_with_tt(board, depth - 1, tt);
-        }
-
-        board.unmake_move(mv, undo_info);
-    }
-
-    // Cache resultado
-    tt.insert(board.zobrist_hash, depth, nodes);
-    nodes
-}
-
-/// Perft paralelo para alta performance em CPUs multi-core
-fn perft_parallel(board: &mut Board, depth: u8) -> u64 {
-    if depth <= 2 {
-        // Use versão sequencial para profundidades baixas
-        return perft_with_tt(board, depth, &mut PerftTT::new());
-    }
-
-    let moves = board.generate_all_moves();
-
-    moves.par_iter().map(|&mv| {
-        let mut board_clone = *board; // Copy barato devido ao trait Copy
-        let undo_info = board_clone.make_move_with_undo(mv);
-        let previous_to_move = !board_clone.to_move;
-
-        if !board_clone.is_king_in_check(previous_to_move) {
-            perft_with_tt(&mut board_clone, depth - 1, &mut PerftTT::new())
-        } else {
-            0
-        }
-    }).sum()
+fn format_move_simple(mv: Move) -> String {
+    let from_file = (mv.from % 8) as u8 + b'a';
+    let from_rank = (mv.from / 8) as u8 + b'1';
+    let to_file = (mv.to % 8) as u8 + b'a';
+    let to_rank = (mv.to / 8) as u8 + b'1';
+    
+    format!("{}{}{}{}", 
+            from_file as char, 
+            from_rank as char,
+            to_file as char, 
+            to_rank as char)
 }

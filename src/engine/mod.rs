@@ -1,3 +1,3 @@
-pub mod perft_tt;
+pub mod tt;
 
-pub use perft_tt::*;
+pub use tt::*;
