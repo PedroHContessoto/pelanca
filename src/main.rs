@@ -3,8 +3,7 @@ use pelanca::*;
 use std::time::Instant;
 use rayon::prelude::*;
 
-mod perft_tt;
-use perft_tt::PerftTT;
+use pelanca::engine::PerftTT;
 
 fn main() {
     println!("=== TESTE DE VALIDAÇÃO DE MOVIMENTOS ===\n");

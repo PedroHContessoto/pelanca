@@ -3,7 +3,7 @@
 
 use crate::types::Bitboard;
 use std::sync::OnceLock;
-use crate::intrinsics::{parallel_deposit, popcount};
+use crate::utils::intrinsics::{parallel_deposit, popcount};
 
 // ============================================================================
 // ESTRUTURAS FUNDAMENTAIS PARA MAGIC BITBOARDS

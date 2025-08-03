@@ -3,7 +3,7 @@
 
 use super::types::*;
 use crate::moves;
-use crate::zobrist::{ZOBRIST_KEYS, piece_to_index, color_to_index};
+use super::zobrist::{ZOBRIST_KEYS, piece_to_index, color_to_index};
 
 // A struct principal do tabuleiro, usando Bitboards.
 #[derive(Debug, Clone, Copy)]
