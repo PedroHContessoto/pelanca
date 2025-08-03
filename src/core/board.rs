@@ -812,7 +812,7 @@ impl Board {
     }
 
     /// Identifica que peça está em uma casa específica (otimizado para make/unmake)
-    fn get_piece_at(&self, square: u8) -> Option<Piece> {
+    pub fn get_piece_at(&self, square: u8) -> Option<Piece> {
         let bb = 1u64 << square;
         let color = if (self.white_pieces & bb) != 0 {
             Color::White

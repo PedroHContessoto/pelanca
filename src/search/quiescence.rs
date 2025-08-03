@@ -1,6 +1,7 @@
 use crate::core::*;
 use crate::engine::TranspositionTable;
 use crate::search::move_ordering::order_moves;
+use crate::search::see::SEE;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Busca Quiescente - explora capturas além da profundidade limite
@@ -52,9 +53,9 @@ pub fn quiescence_search(
     let mut best_score = stand_pat;
     
     for mv in tactical_moves {
-        // SEE (Static Exchange Evaluation) pruning
-        if !is_capture_worthwhile(board, mv) {
-            continue;
+        // SEE (Static Exchange Evaluation) pruning - usa módulo dedicado
+        if SEE::quick_capture_eval(board, mv) < -50 {
+            continue; // Pula capturas claramente ruins
         }
         
         let mut board_clone = *board;
