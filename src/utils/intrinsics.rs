@@ -1,7 +1,7 @@
 // Sistema de intrinsics otimizados para operações de bitboard
 // Performance crítica: operações básicas de bitboard ultra-rápidas
 
-use crate::types::Bitboard;
+use crate::core::types::Bitboard;
 
 // ============================================================================
 // INTRINSICS DE ALTA PERFORMANCE PARA BITBOARDS
