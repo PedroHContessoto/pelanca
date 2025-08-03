@@ -9,6 +9,9 @@ description = "High-performance chess engine written in Rust"
 name = "pelanca_v1"
 path = "src/main.rs"
 
+[[bin]]
+name = "pelanca_uci_v1"
+path = "src/bin/uci.rs"
 
 [dependencies]
 rayon = "1.10"
