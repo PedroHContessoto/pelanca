@@ -47,8 +47,8 @@ pub fn quiescence_search(
         return stand_pat;
     }
     
-    // Ordena capturas por MVV-LVA
-    order_tactical_moves(board, &mut tactical_moves);
+    // Usa order_moves do módulo dedicado para consistência
+    order_moves(board, &mut tactical_moves, Some(tt));
     
     let mut best_score = stand_pat;
     
@@ -136,91 +136,30 @@ fn generate_tactical_moves(board: &Board) -> Vec<Move> {
     tactical_moves
 }
 
-/// Ordena movimentos táticos por MVV-LVA
-fn order_tactical_moves(board: &Board, moves: &mut Vec<Move>) {
-    moves.sort_by_key(|&mv| {
-        let mut score = 0;
-        
-        // MVV-LVA para capturas
-        let to_bb = 1u64 << mv.to;
-        let enemy_pieces = if board.to_move == Color::White {
-            board.black_pieces
-        } else {
-            board.white_pieces
-        };
-        
-        if (enemy_pieces & to_bb) != 0 || mv.is_en_passant {
-            let victim_value = get_piece_value(board, mv.to);
-            let attacker_value = get_piece_value(board, mv.from);
-            score += 1000 + victim_value - attacker_value / 10;
-        }
-        
-        // Promoções
-        if let Some(promotion) = mv.promotion {
-            score += match promotion {
-                PieceKind::Queen => 900,
-                PieceKind::Rook => 500,
-                PieceKind::Bishop => 330,
-                PieceKind::Knight => 320,
-                _ => 100,
-            };
-        }
-        
-        -score // Ordem decrescente
-    });
-}
 
-/// Verifica se captura vale a pena (SEE simplificado)
-fn is_capture_worthwhile(board: &Board, mv: Move) -> bool {
-    let to_bb = 1u64 << mv.to;
-    let enemy_pieces = if board.to_move == Color::White {
-        board.black_pieces
-    } else {
-        board.white_pieces
-    };
-    
-    // Se não é captura, aceita (promoção, xeque)
-    if (enemy_pieces & to_bb) == 0 && !mv.is_en_passant {
-        return true;
-    }
-    
-    let victim_value = get_piece_value(board, mv.to);
-    let attacker_value = get_piece_value(board, mv.from);
-    
-    // SEE simplificado: se vítima vale mais que atacante, provavelmente vale a pena
-    if victim_value >= attacker_value {
-        return true;
-    }
-    
-    // Para capturas ruins (peça valiosa captura peça barata), faz verificação mais detalhada
-    if victim_value + 200 < attacker_value {
-        return false; // Claramente ruim
-    }
-    
-    true // Casos duvidosos, deixa a busca decidir
-}
 
-/// Verifica se movimento dá xeque (versão rápida)
+/// Verifica se movimento dá xeque usando make/unmake do board
 fn gives_check_fast(board: &Board, mv: Move) -> bool {
-    // Implementação simplificada - em produção seria otimizada
     let mut test_board = *board;
-    if test_board.make_move(mv) {
-        let enemy_color = !board.to_move;
-        test_board.is_king_in_check(enemy_color)
-    } else {
-        false
-    }
+    let undo_info = test_board.make_move_with_undo(mv);
+    let previous_to_move = !test_board.to_move;
+    
+    let gives_check = !test_board.is_king_in_check(previous_to_move) && 
+                      test_board.is_king_in_check(test_board.to_move);
+    
+    test_board.unmake_move(mv, undo_info);
+    gives_check
 }
 
-/// Obtém valor da peça em uma casa
+/// Obtém valor da peça em uma casa usando método do board
 fn get_piece_value(board: &Board, square: u8) -> i32 {
-    let square_bb = 1u64 << square;
-    
-    if (board.pawns & square_bb) != 0 { 100 }
-    else if (board.knights & square_bb) != 0 { 320 }
-    else if (board.bishops & square_bb) != 0 { 330 }
-    else if (board.rooks & square_bb) != 0 { 500 }
-    else if (board.queens & square_bb) != 0 { 900 }
-    else if (board.kings & square_bb) != 0 { 10000 }
-    else { 0 }
+    if let Some(piece) = board.get_piece_at(square) {
+        if piece.kind == PieceKind::King {
+            10000 // Valor especial para quiescence
+        } else {
+            piece.kind.value()
+        }
+    } else {
+        0
+    }
 }

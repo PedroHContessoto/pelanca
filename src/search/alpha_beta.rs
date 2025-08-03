@@ -1,6 +1,6 @@
 use crate::core::*;
 use crate::engine::TranspositionTable;
-use crate::search::move_ordering::{order_moves_advanced, KillerMoves, HistoryTable};
+use crate::search::move_ordering::{order_moves_advanced, KillerMoves, HistoryTable, order_moves};
 use crate::search::quiescence::quiescence_search;
 use std::time::{Duration, Instant};
 use rayon::prelude::*;
@@ -343,8 +343,7 @@ impl AlphaBetaTTEngine {
         if let (Some(mut tt_guard), Some(killers_guard), Some(history_guard)) = (tt_option, killers_option, history_option) {
             order_moves_advanced(board, moves, depth, Some(&mut *tt_guard), &*killers_guard, &*history_guard);
         } else {
-            // Fallback para ordenação básica se não conseguir lock
-            use crate::search::move_ordering::order_moves;
+            // Fallback para ordenação básica se não conseguir todos os locks
             if let Ok(mut tt_guard) = shared_tt.try_lock() {
                 order_moves(board, moves, Some(&mut *tt_guard));
             } else {
@@ -607,38 +606,35 @@ mod pst {
     }
 }
 
-/// Avaliação avançada com PST e mobilidade
+/// Avaliação avançada com PST e mobilidade otimizada
 fn evaluate_position(board: &Board) -> i32 {
     use crate::utils::*;
     
     let mut eval = 0;
     
-    // === MATERIAL + PST ===
+    // === MATERIAL RÁPIDO usando piece_count ===
+    for &piece_kind in &[PieceKind::Pawn, PieceKind::Knight, PieceKind::Bishop, PieceKind::Rook, PieceKind::Queen] {
+        let white_count = board.piece_count(Color::White, piece_kind) as i32;
+        let black_count = board.piece_count(Color::Black, piece_kind) as i32;
+        eval += (white_count - black_count) * piece_kind.value();
+    }
+    
+    // === PST apenas ===
     for square in 0..64 {
         if let Some(piece) = board.get_piece_at(square) {
-            let material_value = match piece.kind {
-                PieceKind::Pawn => 100,
-                PieceKind::Knight => 320,
-                PieceKind::Bishop => 330,
-                PieceKind::Rook => 500,
-                PieceKind::Queen => 900,
-                PieceKind::King => 0, // Rei não tem valor material
-            };
-            
             let pst_value = pst::get_pst_value(piece.kind, square, piece.color == Color::White);
-            let total_value = material_value + pst_value;
             
             if piece.color == Color::White {
-                eval += total_value;
+                eval += pst_value;
             } else {
-                eval -= total_value;
+                eval -= pst_value;
             }
         }
     }
     
-    // === MOBILIDADE ===
-    let legal_moves = board.generate_legal_moves();
-    let mobility_bonus = (legal_moves.len() as i32) * 2; // 2 centipawns por movimento
+    // === MOBILIDADE (usa generate_all_moves para performance) ===
+    let pseudo_legal_moves = board.generate_all_moves();
+    let mobility_bonus = (pseudo_legal_moves.len() as i32) * 2; // 2 centipawns por movimento
     
     if board.to_move == Color::White {
         eval += mobility_bonus;
