@@ -37,6 +37,9 @@ impl AlphaBetaTTEngine {
             max_time: None,
             should_stop: AtomicBool::new(false),
             threads: num_cpus::get().max(1),
+            tt: Arc::new(Mutex::new(TranspositionTable::new())),
+            killers: KillerMoves::new(),
+            history: HistoryTable::new(),
         }
     }
     
@@ -47,6 +50,9 @@ impl AlphaBetaTTEngine {
             max_time: None,
             should_stop: AtomicBool::new(false),
             threads: threads.max(1),
+            tt: Arc::new(Mutex::new(TranspositionTable::new())),
+            killers: KillerMoves::new(),
+            history: HistoryTable::new(),
         }
     }
     
@@ -227,10 +233,12 @@ impl AlphaBetaTTEngine {
         }
         
         if depth == 0 {
+            // Usa busca quiescente ao invés de avaliação direta
+            let mut tt_lock = self.tt.lock().unwrap();
             let score = if is_maximizing {
-                evaluate_position(board)
+                quiescence_search(board, alpha, beta, 6, &self.nodes_searched, &mut *tt_lock, evaluate_position)
             } else {
-                -evaluate_position(board)
+                -quiescence_search(board, -beta, -alpha, 6, &self.nodes_searched, &mut *tt_lock, evaluate_position)
             };
             return (score, Vec::new());
         }
