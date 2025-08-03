@@ -634,8 +634,10 @@ impl AlphaBetaTTEngine {
         };
         let time_ms = result.time_elapsed.as_millis();
         
-        // Formata score (centipawns ou mate)
-        let score_output = if result.score.abs() > 29000 {
+        // Formata score (centipawns ou mate) - corrige i32::MIN em depth 1
+        let score_output = if result.score == i32::MIN && result.depth == 1 {
+            "score cp 0".to_string()  // Correção simples para depth 1
+        } else if result.score.abs() > 29000 {
             let mate_in = (30000 - result.score.abs()) / 2 + 1;
             if result.score > 0 {
                 format!("score mate {}", mate_in)
