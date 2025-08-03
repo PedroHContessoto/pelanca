@@ -1,6 +1,8 @@
 use crate::core::*;
 use super::evaluation::*;
 use super::move_ordering::*;
+use super::tactical_analysis::*;
+use super::lmr::*;
 use std::time::{Duration, Instant};
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -23,6 +25,7 @@ pub struct AlphaBetaEngine {
     pub max_time: Option<Duration>,
     pub should_stop: AtomicBool,
     pub threads: usize,
+    pub lmr_config: LMRConfig,
 }
 
 impl AlphaBetaEngine {
@@ -33,6 +36,7 @@ impl AlphaBetaEngine {
             max_time: None,
             should_stop: AtomicBool::new(false),
             threads: num_cpus::get().max(1),
+            lmr_config: LMRConfig::ultra_aggressive(), // Config agressiva para depth 17
         }
     }
     
@@ -43,6 +47,7 @@ impl AlphaBetaEngine {
             max_time: None,
             should_stop: AtomicBool::new(false),
             threads: threads.max(1),
+            lmr_config: LMRConfig::ultra_aggressive(), // Config agressiva para depth 17
         }
     }
     
@@ -201,6 +206,9 @@ impl AlphaBetaEngine {
             return (None, evaluate_position(board), Vec::new());
         }
         
+        // FILTRO ADAPTATIVO para eliminar movimentos não promissores
+        MoveFilter::filter_unpromising_moves(board, &mut moves);
+        
         // ORDENAÇÃO INTELIGENTE para máxima performance
         order_moves(board, &mut moves);
         
@@ -220,12 +228,8 @@ impl AlphaBetaEngine {
             let previous_to_move = !board_clone.to_move;
             
             if !board_clone.is_king_in_check(previous_to_move) {
-                // QUIESCENCE SEARCH integrada para táticas
-                let (score, mut pv_line) = if depth >= 3 {
-                    self.alpha_beta_with_pv(&board_clone, depth - 1, i32::MIN, i32::MAX, false)
-                } else {
-                    self.alpha_beta_with_pv(&board_clone, depth - 1, i32::MIN, i32::MAX, false)
-                };
+                // Busca com janela estreita para economizar nós
+                let (score, mut pv_line) = self.alpha_beta_with_pv(&board_clone, depth - 1, i32::MIN, i32::MAX, false);
                 
                 // Adiciona movimento atual no início da PV
                 pv_line.insert(0, mv);
@@ -312,7 +316,7 @@ impl AlphaBetaEngine {
         
         // Se chegou na profundidade limite, usa quiescence search para táticas
         if depth == 0 {
-            return self.quiescence_search(board, alpha, beta, is_maximizing, 4);
+            return self.quiescence_search(board, alpha, beta, is_maximizing, 3); // Reduzido para 3
         }
         
         let mut moves = board.generate_legal_moves();
@@ -328,62 +332,75 @@ impl AlphaBetaEngine {
             }
         }
         
+        // FILTRO ADAPTATIVO para controlar explosão combinatória
+        MoveFilter::filter_unpromising_moves(board, &mut moves);
+        
         // ORDENAÇÃO INTELIGENTE para máximas podas
         order_moves(board, &mut moves);
         
         if is_maximizing {
             let mut max_eval = i32::MIN;
             
-            for mv in moves {
+            for (move_index, mv) in moves.iter().enumerate() {
                 if self.should_stop() {
                     break;
                 }
                 
                 let mut board_clone = *board;
-                let undo_info = board_clone.make_move_with_undo(mv);
+                let undo_info = board_clone.make_move_with_undo(*mv);
                 let previous_to_move = !board_clone.to_move;
                 
                 if !board_clone.is_king_in_check(previous_to_move) {
-                    let eval = self.alpha_beta_sequential(&board_clone, depth - 1, alpha, beta, false);
+                    // LATE MOVE REDUCTION (LMR) usando configuração agressiva
+                    let is_tactical = LateMovePruner::is_tactical_move(board, *mv);
+                    let reduction = self.lmr_config.calculate_reduction(move_index, depth, is_tactical);
+                    let search_depth = depth.saturating_sub(1 + reduction);
+                    
+                    let eval = self.alpha_beta_sequential(&board_clone, search_depth, alpha, beta, false);
                     max_eval = max_eval.max(eval);
                     alpha = alpha.max(eval);
                     
                     // Poda Alpha-Beta
                     if beta <= alpha {
-                        board_clone.unmake_move(mv, undo_info);
+                        board_clone.unmake_move(*mv, undo_info);
                         break;
                     }
                 }
                 
-                board_clone.unmake_move(mv, undo_info);
+                board_clone.unmake_move(*mv, undo_info);
             }
             
             max_eval
         } else {
             let mut min_eval = i32::MAX;
             
-            for mv in moves {
+            for (move_index, mv) in moves.iter().enumerate() {
                 if self.should_stop() {
                     break;
                 }
                 
                 let mut board_clone = *board;
-                let undo_info = board_clone.make_move_with_undo(mv);
+                let undo_info = board_clone.make_move_with_undo(*mv);
                 let previous_to_move = !board_clone.to_move;
                 
                 if !board_clone.is_king_in_check(previous_to_move) {
-                    let eval = self.alpha_beta_sequential(&board_clone, depth - 1, alpha, beta, true);
+                    // LATE MOVE REDUCTION (LMR) usando configuração agressiva
+                    let is_tactical = LateMovePruner::is_tactical_move(board, *mv);
+                    let reduction = self.lmr_config.calculate_reduction(move_index, depth, is_tactical);
+                    let search_depth = depth.saturating_sub(1 + reduction);
+                    
+                    let eval = self.alpha_beta_sequential(&board_clone, search_depth, alpha, beta, true);
                     min_eval = min_eval.min(eval);
                     beta = beta.min(eval);
                     
                     // Poda Alpha-Beta
                     if beta <= alpha {
-                        board_clone.unmake_move(mv, undo_info);
+                        board_clone.unmake_move(*mv, undo_info);
                         break;
                     }
                 }
                 
-                board_clone.unmake_move(mv, undo_info);
+                board_clone.unmake_move(*mv, undo_info);
             }
             
             min_eval
@@ -482,7 +499,7 @@ impl AlphaBetaEngine {
         
         // Se chegou na profundidade limite, usa quiescence search
         if depth == 0 {
-            let score = self.quiescence_search(board, alpha, beta, is_maximizing, 4);
+            let score = self.quiescence_search(board, alpha, beta, is_maximizing, 3); // Reduzido para 3
             return (score, Vec::new());
         }
         
@@ -498,6 +515,9 @@ impl AlphaBetaEngine {
             }
         }
         
+        // FILTRO ADAPTATIVO para controlar explosão combinatória
+        MoveFilter::filter_unpromising_moves(board, &mut moves);
+        
         // ORDENAÇÃO INTELIGENTE para máximas podas
         order_moves(board, &mut moves);
         
@@ -506,23 +526,28 @@ impl AlphaBetaEngine {
         if is_maximizing {
             let mut max_eval = i32::MIN;
             
-            for mv in moves {
+            for (move_index, mv) in moves.iter().enumerate() {
                 if self.should_stop() {
                     break;
                 }
                 
                 let mut board_clone = *board;
-                let undo_info = board_clone.make_move_with_undo(mv);
+                let undo_info = board_clone.make_move_with_undo(*mv);
                 let previous_to_move = !board_clone.to_move;
                 
                 if !board_clone.is_king_in_check(previous_to_move) {
-                    let (eval, mut pv_line) = self.alpha_beta_with_pv(&board_clone, depth - 1, alpha, beta, false);
+                    // LMR para alpha_beta_with_pv também
+                    let is_tactical = LateMovePruner::is_tactical_move(board, *mv);
+                    let reduction = self.lmr_config.calculate_reduction(move_index, depth, is_tactical);
+                    let search_depth = depth.saturating_sub(1 + reduction);
+                    
+                    let (eval, mut pv_line) = self.alpha_beta_with_pv(&board_clone, search_depth, alpha, beta, false);
                     
                     if eval > max_eval {
                         max_eval = eval;
                         
                         // Atualiza melhor PV
-                        best_pv = vec![mv];
+                        best_pv = vec![*mv];
                         best_pv.extend(pv_line);
                     }
                     
@@ -530,35 +555,40 @@ impl AlphaBetaEngine {
                     
                     // Poda Alpha-Beta
                     if beta <= alpha {
-                        board_clone.unmake_move(mv, undo_info);
+                        board_clone.unmake_move(*mv, undo_info);
                         break;
                     }
                 }
                 
-                board_clone.unmake_move(mv, undo_info);
+                board_clone.unmake_move(*mv, undo_info);
             }
             
             (max_eval, best_pv)
         } else {
             let mut min_eval = i32::MAX;
             
-            for mv in moves {
+            for (move_index, mv) in moves.iter().enumerate() {
                 if self.should_stop() {
                     break;
                 }
                 
                 let mut board_clone = *board;
-                let undo_info = board_clone.make_move_with_undo(mv);
+                let undo_info = board_clone.make_move_with_undo(*mv);
                 let previous_to_move = !board_clone.to_move;
                 
                 if !board_clone.is_king_in_check(previous_to_move) {
-                    let (eval, mut pv_line) = self.alpha_beta_with_pv(&board_clone, depth - 1, alpha, beta, true);
+                    // LMR para alpha_beta_with_pv também
+                    let is_tactical = LateMovePruner::is_tactical_move(board, *mv);
+                    let reduction = self.lmr_config.calculate_reduction(move_index, depth, is_tactical);
+                    let search_depth = depth.saturating_sub(1 + reduction);
+                    
+                    let (eval, mut pv_line) = self.alpha_beta_with_pv(&board_clone, search_depth, alpha, beta, true);
                     
                     if eval < min_eval {
                         min_eval = eval;
                         
                         // Atualiza melhor PV
-                        best_pv = vec![mv];
+                        best_pv = vec![*mv];
                         best_pv.extend(pv_line);
                     }
                     
@@ -566,12 +596,12 @@ impl AlphaBetaEngine {
                     
                     // Poda Alpha-Beta
                     if beta <= alpha {
-                        board_clone.unmake_move(mv, undo_info);
+                        board_clone.unmake_move(*mv, undo_info);
                         break;
                     }
                 }
                 
-                board_clone.unmake_move(mv, undo_info);
+                board_clone.unmake_move(*mv, undo_info);
             }
             
             (min_eval, best_pv)
