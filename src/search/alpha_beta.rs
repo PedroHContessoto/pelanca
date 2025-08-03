@@ -1,10 +1,8 @@
 use crate::core::*;
-use crate::engine::{TranspositionTable, TT_EXACT, TT_ALPHA, TT_BETA};
-use crate::search::{order_moves_advanced, KillerMoves, HistoryTable, quiescence_search};
+use crate::engine::TranspositionTable;
 use std::time::{Duration, Instant};
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
 /// Resultado da busca Alpha-Beta
 #[derive(Debug, Clone)]
@@ -17,16 +15,13 @@ pub struct SearchResult {
     pub pv_line: Vec<Move>,
 }
 
-/// Motor Alpha-Beta com TT compartilhada e otimizações avançadas
+/// Motor Alpha-Beta otimizado para UCI
 pub struct AlphaBetaTTEngine {
     pub nodes_searched: AtomicU64,
     pub start_time: Option<Instant>,
     pub max_time: Option<Duration>,
     pub should_stop: AtomicBool,
     pub threads: usize,
-    pub tt: Arc<Mutex<TranspositionTable>>, // TT compartilhada
-    pub killers: KillerMoves,
-    pub history: HistoryTable,
 }
 
 impl AlphaBetaTTEngine {
@@ -37,9 +32,6 @@ impl AlphaBetaTTEngine {
             max_time: None,
             should_stop: AtomicBool::new(false),
             threads: num_cpus::get().max(1),
-            tt: Arc::new(Mutex::new(TranspositionTable::new())),
-            killers: KillerMoves::new(),
-            history: HistoryTable::new(),
         }
     }
     
@@ -50,9 +42,6 @@ impl AlphaBetaTTEngine {
             max_time: None,
             should_stop: AtomicBool::new(false),
             threads: threads.max(1),
-            tt: Arc::new(Mutex::new(TranspositionTable::new())),
-            killers: KillerMoves::new(),
-            history: HistoryTable::new(),
         }
     }
     
@@ -89,8 +78,8 @@ impl AlphaBetaTTEngine {
                 pv_line: pv_line.clone(),
             };
             
-            // Imprime linha de pensamento
-            self.print_thinking_line(&best_result);
+            // UCI standard output format - clean and professional
+            self.print_uci_info(&best_result);
             
             // Se encontrou mate, para a busca
             if score.abs() > 29000 {
@@ -119,16 +108,15 @@ impl AlphaBetaTTEngine {
             pv_line,
         };
         
-        // Imprime linha de pensamento
-        self.print_thinking_line(&result);
+        // UCI standard output format
+        self.print_uci_info(&result);
         
         result
     }
     
-    /// Alpha-Beta paralelo na raiz (baseado em perft_parallel)
+    /// Alpha-Beta paralelo na raiz
     fn alpha_beta_root_parallel(&self, board: &Board, depth: u8) -> (Option<Move>, i32, Vec<Move>) {
         if depth <= 2 {
-            // Use versão sequencial para profundidades baixas (como perft_parallel)
             return self.alpha_beta_root_sequential(board, depth);
         }
         
@@ -138,23 +126,24 @@ impl AlphaBetaTTEngine {
             return (None, evaluate_position(board), Vec::new());
         }
         
-        // Paralelização massiva - cada movimento em thread separada (igual perft_parallel)
-        let results: Vec<(Move, i32, Vec<Move>)> = moves.par_iter().filter_map(|&mv| {
+        // Ordenação básica de movimentos
+        let mut ordered_moves = moves;
+        self.order_moves_basic(board, &mut ordered_moves);
+        
+        // Paralelização massiva
+        let results: Vec<(Move, i32, Vec<Move>)> = ordered_moves.par_iter().filter_map(|&mv| {
             if self.should_stop() {
                 return None;
             }
             
-            let mut board_clone = *board; // Copy barato devido ao trait Copy
+            let mut board_clone = *board;
             let undo_info = board_clone.make_move_with_undo(mv);
             let previous_to_move = !board_clone.to_move;
             
             if !board_clone.is_king_in_check(previous_to_move) {
-                // Cada thread tem sua própria TT
                 let (score, mut pv_line) = self.alpha_beta_with_tt(&board_clone, depth - 1, i32::MIN, i32::MAX, false, &mut TranspositionTable::new());
                 
-                // Adiciona movimento atual no início da PV
                 pv_line.insert(0, mv);
-                
                 board_clone.unmake_move(mv, undo_info);
                 Some((mv, -score, pv_line))
             } else {
@@ -167,8 +156,7 @@ impl AlphaBetaTTEngine {
         if let Some((best_move, best_score, pv_line)) = results.into_iter().max_by_key(|(_, score, _)| *score) {
             (Some(best_move), best_score, pv_line)
         } else {
-            // Fallback
-            (Some(moves[0]), 0, vec![moves[0]])
+            (Some(ordered_moves[0]), 0, vec![ordered_moves[0]])
         }
     }
     
@@ -180,6 +168,9 @@ impl AlphaBetaTTEngine {
             return (None, evaluate_position(board), Vec::new());
         }
         
+        let mut ordered_moves = moves;
+        self.order_moves_basic(board, &mut ordered_moves);
+        
         let mut best_move = None;
         let mut best_score = i32::MIN;
         let mut best_pv = Vec::new();
@@ -187,7 +178,7 @@ impl AlphaBetaTTEngine {
         let beta = i32::MAX;
         let mut tt = TranspositionTable::new();
         
-        for &mv in &moves {
+        for &mv in &ordered_moves {
             if self.should_stop() {
                 break;
             }
@@ -204,14 +195,12 @@ impl AlphaBetaTTEngine {
                     best_score = score;
                     best_move = Some(mv);
                     
-                    // Constrói PV completa
                     best_pv = vec![mv];
                     best_pv.extend(pv_line);
                 }
                 
                 alpha = alpha.max(score);
                 
-                // Alpha-Beta cutoff
                 if beta <= alpha {
                     board_clone.unmake_move(mv, undo_info);
                     break;
@@ -233,35 +222,22 @@ impl AlphaBetaTTEngine {
         }
         
         if depth == 0 {
-            // Usa busca quiescente ao invés de avaliação direta
-            let mut tt_lock = self.tt.lock().unwrap();
             let score = if is_maximizing {
-                quiescence_search(board, alpha, beta, 6, &self.nodes_searched, &mut *tt_lock, evaluate_position)
+                evaluate_position(board)
             } else {
-                -quiescence_search(board, -beta, -alpha, 6, &self.nodes_searched, &mut *tt_lock, evaluate_position)
+                -evaluate_position(board)
             };
             return (score, Vec::new());
-        }
-        
-        // Verifica cache primeiro
-        if let Some(cached_score) = tt.probe(board.zobrist_hash, depth, alpha, beta) {
-            return (cached_score, Vec::new()); // Cache hit
         }
         
         let moves = board.generate_legal_moves();
         
         if moves.is_empty() {
-            // Não há movimentos legais (mate ou afogamento)
             let score = if board.is_king_in_check(board.to_move) {
-                // Xeque-mate - mais próximo é melhor
                 if is_maximizing { -30000 + depth as i32 } else { 30000 - depth as i32 }
             } else {
-                // Afogamento
                 0
             };
-            
-            // Cache resultado
-            tt.store(board.zobrist_hash, depth, score, TT_EXACT, None);
             return (score, Vec::new());
         }
         
@@ -284,15 +260,12 @@ impl AlphaBetaTTEngine {
                     
                     if eval > max_eval {
                         max_eval = eval;
-                        
-                        // Atualiza melhor PV
                         best_pv = vec![mv];
                         best_pv.extend(pv_line);
                     }
                     
                     alpha = alpha.max(eval);
                     
-                    // Poda Alpha-Beta
                     if beta <= alpha {
                         board_clone.unmake_move(mv, undo_info);
                         break;
@@ -302,15 +275,6 @@ impl AlphaBetaTTEngine {
                 board_clone.unmake_move(mv, undo_info);
             }
             
-            // Cache resultado com flag apropriada
-            let flag = if max_eval <= alpha {
-                TT_ALPHA
-            } else if max_eval >= beta {
-                TT_BETA
-            } else {
-                TT_EXACT
-            };
-            tt.store(board.zobrist_hash, depth, max_eval, flag, best_pv.first().copied());
             (max_eval, best_pv)
         } else {
             let mut min_eval = i32::MAX;
@@ -329,15 +293,12 @@ impl AlphaBetaTTEngine {
                     
                     if eval < min_eval {
                         min_eval = eval;
-                        
-                        // Atualiza melhor PV
                         best_pv = vec![mv];
                         best_pv.extend(pv_line);
                     }
                     
                     beta = beta.min(eval);
                     
-                    // Poda Alpha-Beta
                     if beta <= alpha {
                         board_clone.unmake_move(mv, undo_info);
                         break;
@@ -347,20 +308,61 @@ impl AlphaBetaTTEngine {
                 board_clone.unmake_move(mv, undo_info);
             }
             
-            // Cache resultado com flag apropriada
-            let flag = if min_eval <= alpha {
-                TT_ALPHA
-            } else if min_eval >= beta {
-                TT_BETA
-            } else {
-                TT_EXACT
-            };
-            tt.store(board.zobrist_hash, depth, min_eval, flag, best_pv.first().copied());
             (min_eval, best_pv)
         }
     }
     
-    /// Verifica se deve parar a busca (por tempo)
+    /// Ordenação básica de movimentos para melhorar podas
+    fn order_moves_basic(&self, board: &Board, moves: &mut Vec<Move>) {
+        moves.sort_by_key(|&mv| {
+            let mut score = 0;
+            
+            // Capturas primeiro (MVV-LVA básico)
+            if self.is_capture(board, mv) {
+                let victim_value = self.get_piece_value(board, mv.to);
+                let attacker_value = self.get_piece_value(board, mv.from);
+                score += 1000 + victim_value - attacker_value / 10;
+            }
+            
+            // Promoções
+            if mv.promotion.is_some() {
+                score += 900;
+            }
+            
+            // Controle do centro
+            if self.is_center_square(mv.to) {
+                score += 50;
+            }
+            
+            -score // Ordem decrescente
+        });
+    }
+    
+    fn is_capture(&self, board: &Board, mv: Move) -> bool {
+        let to_bb = 1u64 << mv.to;
+        let enemy_pieces = if board.to_move == Color::White {
+            board.black_pieces
+        } else {
+            board.white_pieces
+        };
+        (enemy_pieces & to_bb) != 0 || mv.is_en_passant
+    }
+    
+    fn get_piece_value(&self, board: &Board, square: u8) -> i32 {
+        let square_bb = 1u64 << square;
+        if (board.pawns & square_bb) != 0 { 100 }
+        else if (board.knights & square_bb) != 0 { 320 }
+        else if (board.bishops & square_bb) != 0 { 330 }
+        else if (board.rooks & square_bb) != 0 { 500 }
+        else if (board.queens & square_bb) != 0 { 900 }
+        else { 0 }
+    }
+    
+    fn is_center_square(&self, square: u8) -> bool {
+        matches!(square, 27 | 28 | 35 | 36) // e4, d4, e5, d5
+    }
+    
+    /// Verifica se deve parar a busca
     fn should_stop(&self) -> bool {
         if let (Some(start), Some(max_time)) = (self.start_time, self.max_time) {
             start.elapsed() >= max_time
@@ -369,8 +371,8 @@ impl AlphaBetaTTEngine {
         }
     }
     
-    /// Imprime linha de pensamento UCI
-    fn print_thinking_line(&self, result: &SearchResult) {
+    /// UCI standard output format - clean and professional
+    fn print_uci_info(&self, result: &SearchResult) {
         let nps = if result.time_elapsed.as_millis() > 0 {
             (result.nodes_searched as f64 / result.time_elapsed.as_secs_f64()) as u64
         } else {
@@ -390,26 +392,27 @@ impl AlphaBetaTTEngine {
             format!("score cp {}", result.score)
         };
         
-        // Constrói PV line
+        // PV line
         let pv = if result.pv_line.is_empty() {
-            "pv".to_string()
+            String::new()
         } else {
             let pv_moves: Vec<String> = result.pv_line.iter()
                 .map(|mv| self.format_uci_move(*mv))
                 .collect();
-            format!("pv {}", pv_moves.join(" "))
+            format!(" pv {}", pv_moves.join(" "))
         };
         
-        println!("info depth {} {} nodes {} nps {} time {} hashfull {} tbhits {} multipv {} {}", 
-                 result.depth, 
-                 score_output, 
-                 result.nodes_searched, 
-                 nps, 
-                 time_ms,
-                 0, // hashfull (seria melhor com TT compartilhada)
-                 0, // tbhits
-                 1, // multipv
-                 pv
+        // UCI standard output format - clean and professional
+        print!("info depth {} {} nodes {} nps {} time {} hashfull {} tbhits {} multipv {}{}\n", 
+               result.depth, 
+               score_output, 
+               result.nodes_searched, 
+               nps, 
+               time_ms,
+               0, // hashfull (TT não compartilhada no momento)
+               0, // tbhits
+               1, // multipv
+               pv
         );
     }
     
@@ -446,23 +449,11 @@ impl Default for AlphaBetaTTEngine {
     }
 }
 
-/// Função de conveniência para busca rápida
-pub fn find_best_move_tt(board: &Board, depth: u8) -> SearchResult {
-    let mut engine = AlphaBetaTTEngine::new();
-    engine.search(board, depth)
-}
-
-/// Função de conveniência para busca com limite de tempo
-pub fn find_best_move_time_tt(board: &Board, time_limit: Duration, max_depth: u8) -> SearchResult {
-    let mut engine = AlphaBetaTTEngine::new();
-    engine.search_time(board, time_limit, max_depth)
-}
-
-/// Avaliação simples de posição (material + posição básica)
+/// Avaliação simples de posição
 fn evaluate_position(board: &Board) -> i32 {
     use crate::utils::*;
     
-    // Conta material
+    // Material
     let white_pawns = popcount(board.white_pieces & board.pawns) as i32;
     let black_pawns = popcount(board.black_pieces & board.pawns) as i32;
     let white_knights = popcount(board.white_pieces & board.knights) as i32;
@@ -474,14 +465,13 @@ fn evaluate_position(board: &Board) -> i32 {
     let white_queens = popcount(board.white_pieces & board.queens) as i32;
     let black_queens = popcount(board.black_pieces & board.queens) as i32;
     
-    // Material
     let material = (white_pawns - black_pawns) * 100 +
                   (white_knights - black_knights) * 320 +
                   (white_bishops - black_bishops) * 330 +
                   (white_rooks - black_rooks) * 500 +
                   (white_queens - black_queens) * 900;
     
-    // Bônus por controle do centro
+    // Controle do centro
     const CENTER: u64 = 0x0000001818000000; // e4, e5, d4, d5
     let white_center = popcount(board.white_pieces & CENTER) as i32;
     let black_center = popcount(board.black_pieces & CENTER) as i32;
