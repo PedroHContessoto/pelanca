@@ -2,7 +2,7 @@
 use pelanca::*;
 use pelanca::search::AlphaBetaTTEngine;
 use std::io;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn main() {
     // Inicializa dependências do motor

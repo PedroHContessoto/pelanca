@@ -3,6 +3,7 @@ use crate::engine::TranspositionTable;
 use std::time::{Duration, Instant};
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Resultado da busca Alpha-Beta
 #[derive(Debug, Clone)]
@@ -22,6 +23,7 @@ pub struct AlphaBetaTTEngine {
     pub max_time: Option<Duration>,
     pub should_stop: AtomicBool,
     pub threads: usize,
+    pub shared_tt: Arc<Mutex<TranspositionTable>>,
 }
 
 impl AlphaBetaTTEngine {
@@ -32,6 +34,7 @@ impl AlphaBetaTTEngine {
             max_time: None,
             should_stop: AtomicBool::new(false),
             threads: num_cpus::get().max(1),
+            shared_tt: Arc::new(Mutex::new(TranspositionTable::new())),
         }
     }
     
@@ -42,6 +45,7 @@ impl AlphaBetaTTEngine {
             max_time: None,
             should_stop: AtomicBool::new(false),
             threads: threads.max(1),
+            shared_tt: Arc::new(Mutex::new(TranspositionTable::new())),
         }
     }
     
@@ -130,7 +134,8 @@ impl AlphaBetaTTEngine {
         let mut ordered_moves = moves;
         self.order_moves_basic(board, &mut ordered_moves);
         
-        // Paralelização massiva
+        // Paralelização massiva com TT compartilhada
+        let shared_tt = self.shared_tt.clone();
         let results: Vec<(Move, i32, Vec<Move>)> = ordered_moves.par_iter().filter_map(|&mv| {
             if self.should_stop() {
                 return None;
@@ -141,7 +146,7 @@ impl AlphaBetaTTEngine {
             let previous_to_move = !board_clone.to_move;
             
             if !board_clone.is_king_in_check(previous_to_move) {
-                let (score, mut pv_line) = self.alpha_beta_with_tt(&board_clone, depth - 1, i32::MIN, i32::MAX, false, &mut TranspositionTable::new());
+                let (score, mut pv_line) = self.alpha_beta_with_shared_tt(&board_clone, depth - 1, i32::MIN, i32::MAX, false, &shared_tt);
                 
                 pv_line.insert(0, mv);
                 board_clone.unmake_move(mv, undo_info);
@@ -176,7 +181,7 @@ impl AlphaBetaTTEngine {
         let mut best_pv = Vec::new();
         let mut alpha = i32::MIN;
         let beta = i32::MAX;
-        let mut tt = TranspositionTable::new();
+        let shared_tt = self.shared_tt.clone();
         
         for &mv in &ordered_moves {
             if self.should_stop() {
@@ -188,7 +193,7 @@ impl AlphaBetaTTEngine {
             let previous_to_move = !board_clone.to_move;
             
             if !board_clone.is_king_in_check(previous_to_move) {
-                let (score, mut pv_line) = self.alpha_beta_with_tt(&board_clone, depth - 1, -beta, -alpha, false, &mut tt);
+                let (score, pv_line) = self.alpha_beta_with_shared_tt(&board_clone, depth - 1, -beta, -alpha, false, &shared_tt);
                 let score = -score;
                 
                 if score > best_score {
@@ -213,8 +218,8 @@ impl AlphaBetaTTEngine {
         (best_move, best_score, best_pv)
     }
     
-    /// Alpha-Beta com TT
-    fn alpha_beta_with_tt(&self, board: &Board, depth: u8, mut alpha: i32, mut beta: i32, is_maximizing: bool, tt: &mut TranspositionTable) -> (i32, Vec<Move>) {
+    /// Alpha-Beta com TT compartilhada (thread-safe)
+    fn alpha_beta_with_shared_tt(&self, board: &Board, depth: u8, mut alpha: i32, mut beta: i32, is_maximizing: bool, shared_tt: &Arc<Mutex<TranspositionTable>>) -> (i32, Vec<Move>) {
         self.nodes_searched.fetch_add(1, Ordering::Relaxed);
         
         if self.should_stop() {
@@ -222,10 +227,11 @@ impl AlphaBetaTTEngine {
         }
         
         if depth == 0 {
+            // QUIESCENCE SEARCH: Explora capturas além da profundidade
             let score = if is_maximizing {
-                evaluate_position(board)
+                self.quiescence_search(board, alpha, beta, 6)
             } else {
-                -evaluate_position(board)
+                -self.quiescence_search(board, -beta, -alpha, 6)
             };
             return (score, Vec::new());
         }
@@ -256,7 +262,7 @@ impl AlphaBetaTTEngine {
                 let previous_to_move = !board_clone.to_move;
                 
                 if !board_clone.is_king_in_check(previous_to_move) {
-                    let (eval, mut pv_line) = self.alpha_beta_with_tt(&board_clone, depth - 1, alpha, beta, false, tt);
+                    let (eval, pv_line) = self.alpha_beta_with_shared_tt(&board_clone, depth - 1, alpha, beta, false, shared_tt);
                     
                     if eval > max_eval {
                         max_eval = eval;
@@ -289,7 +295,7 @@ impl AlphaBetaTTEngine {
                 let previous_to_move = !board_clone.to_move;
                 
                 if !board_clone.is_king_in_check(previous_to_move) {
-                    let (eval, mut pv_line) = self.alpha_beta_with_tt(&board_clone, depth - 1, alpha, beta, true, tt);
+                    let (eval, pv_line) = self.alpha_beta_with_shared_tt(&board_clone, depth - 1, alpha, beta, true, shared_tt);
                     
                     if eval < min_eval {
                         min_eval = eval;
@@ -312,30 +318,315 @@ impl AlphaBetaTTEngine {
         }
     }
     
-    /// Ordenação básica de movimentos para melhorar podas
+    /// Alpha-Beta com TT local (para comparação)
+    fn alpha_beta_with_tt(&self, board: &Board, depth: u8, mut alpha: i32, mut beta: i32, is_maximizing: bool, tt: &mut TranspositionTable) -> (i32, Vec<Move>) {
+        self.nodes_searched.fetch_add(1, Ordering::Relaxed);
+        
+        if self.should_stop() {
+            return (0, Vec::new());
+        }
+        
+        if depth == 0 {
+            // QUIESCENCE SEARCH: Explora capturas além da profundidade
+            let score = if is_maximizing {
+                self.quiescence_search(board, alpha, beta, 6)
+            } else {
+                -self.quiescence_search(board, -beta, -alpha, 6)
+            };
+            return (score, Vec::new());
+        }
+        
+        let moves = board.generate_legal_moves();
+        
+        if moves.is_empty() {
+            let score = if board.is_king_in_check(board.to_move) {
+                if is_maximizing { -30000 + depth as i32 } else { 30000 - depth as i32 }
+            } else {
+                0
+            };
+            return (score, Vec::new());
+        }
+        
+        let mut best_pv = Vec::new();
+        
+        if is_maximizing {
+            let mut max_eval = i32::MIN;
+            
+            for mv in moves {
+                if self.should_stop() {
+                    break;
+                }
+                
+                let mut board_clone = *board;
+                let undo_info = board_clone.make_move_with_undo(mv);
+                let previous_to_move = !board_clone.to_move;
+                
+                if !board_clone.is_king_in_check(previous_to_move) {
+                    let (eval, pv_line) = self.alpha_beta_with_tt(&board_clone, depth - 1, alpha, beta, false, tt);
+                    
+                    if eval > max_eval {
+                        max_eval = eval;
+                        best_pv = vec![mv];
+                        best_pv.extend(pv_line);
+                    }
+                    
+                    alpha = alpha.max(eval);
+                    
+                    if beta <= alpha {
+                        board_clone.unmake_move(mv, undo_info);
+                        break;
+                    }
+                }
+                
+                board_clone.unmake_move(mv, undo_info);
+            }
+            
+            (max_eval, best_pv)
+        } else {
+            let mut min_eval = i32::MAX;
+            
+            for mv in moves {
+                if self.should_stop() {
+                    break;
+                }
+                
+                let mut board_clone = *board;
+                let undo_info = board_clone.make_move_with_undo(mv);
+                let previous_to_move = !board_clone.to_move;
+                
+                if !board_clone.is_king_in_check(previous_to_move) {
+                    let (eval, pv_line) = self.alpha_beta_with_tt(&board_clone, depth - 1, alpha, beta, true, tt);
+                    
+                    if eval < min_eval {
+                        min_eval = eval;
+                        best_pv = vec![mv];
+                        best_pv.extend(pv_line);
+                    }
+                    
+                    beta = beta.min(eval);
+                    
+                    if beta <= alpha {
+                        board_clone.unmake_move(mv, undo_info);
+                        break;
+                    }
+                }
+                
+                board_clone.unmake_move(mv, undo_info);
+            }
+            
+            (min_eval, best_pv)
+        }
+    }
+    
+    /// Ordenação avançada MVV-LVA + heurísticas
     fn order_moves_basic(&self, board: &Board, moves: &mut Vec<Move>) {
         moves.sort_by_key(|&mv| {
             let mut score = 0;
             
-            // Capturas primeiro (MVV-LVA básico)
+            // 1. MVV-LVA COMPLETO para capturas
             if self.is_capture(board, mv) {
                 let victim_value = self.get_piece_value(board, mv.to);
                 let attacker_value = self.get_piece_value(board, mv.from);
-                score += 1000 + victim_value - attacker_value / 10;
+                
+                // MVV-LVA: Most Valuable Victim - Least Valuable Attacker
+                score += 10000 + (victim_value * 10) - attacker_value;
+                
+                // Bônus para capturas que ganham material
+                if victim_value >= attacker_value {
+                    score += 1000;
+                }
             }
             
-            // Promoções
-            if mv.promotion.is_some() {
-                score += 900;
+            // 2. Promoções (especialmente para dama)
+            if let Some(promotion) = mv.promotion {
+                score += match promotion {
+                    PieceKind::Queen => 9000,
+                    PieceKind::Rook => 5000,
+                    PieceKind::Bishop => 3300,
+                    PieceKind::Knight => 3200,
+                    _ => 1000,
+                };
             }
             
-            // Controle do centro
-            if self.is_center_square(mv.to) {
-                score += 50;
+            // 3. Xeques (podem forçar respostas)
+            if self.gives_check_fast(board, mv) {
+                score += 200;
+            }
+            
+            // 4. Controle do centro expandido
+            score += self.center_control_score(mv);
+            
+            // 5. Desenvolvimento de peças
+            if self.is_development_move(board, mv) {
+                score += 100;
+            }
+            
+            // 6. Roque (segurança do rei)
+            if mv.is_castling {
+                score += 150;
             }
             
             -score // Ordem decrescente
         });
+    }
+    
+    /// Busca Quiescente - explora capturas para evitar horizon effect
+    fn quiescence_search(&self, board: &Board, mut alpha: i32, beta: i32, qs_depth: u8) -> i32 {
+        self.nodes_searched.fetch_add(1, Ordering::Relaxed);
+        
+        if self.should_stop() || qs_depth == 0 {
+            return evaluate_position(board);
+        }
+        
+        // Stand-pat: avaliação estática
+        let stand_pat = evaluate_position(board);
+        
+        // Beta cutoff
+        if stand_pat >= beta {
+            return beta;
+        }
+        
+        // Melhora alpha
+        if stand_pat > alpha {
+            alpha = stand_pat;
+        }
+        
+        // Delta pruning: se mesmo capturando a dama não melhora significativamente
+        if stand_pat + 1000 < alpha {
+            return alpha; // Posição muito ruim
+        }
+        
+        // Gera apenas capturas e promoções
+        let tactical_moves = self.generate_tactical_moves(board);
+        
+        if tactical_moves.is_empty() {
+            return stand_pat;
+        }
+        
+        let mut best_score = stand_pat;
+        
+        for mv in tactical_moves {
+            // SEE (Static Exchange Evaluation) básico
+            if !self.is_good_capture(board, mv) {
+                continue;
+            }
+            
+            let mut board_clone = *board;
+            let undo_info = board_clone.make_move_with_undo(mv);
+            let previous_to_move = !board_clone.to_move;
+            
+            if !board_clone.is_king_in_check(previous_to_move) {
+                let score = -self.quiescence_search(&board_clone, -beta, -alpha, qs_depth - 1);
+                
+                board_clone.unmake_move(mv, undo_info);
+                
+                if score > best_score {
+                    best_score = score;
+                }
+                
+                if score > alpha {
+                    alpha = score;
+                }
+                
+                // Beta cutoff
+                if score >= beta {
+                    return beta;
+                }
+            } else {
+                board_clone.unmake_move(mv, undo_info);
+            }
+        }
+        
+        best_score
+    }
+    
+    /// Gera apenas movimentos táticos (capturas, promoções)
+    fn generate_tactical_moves(&self, board: &Board) -> Vec<Move> {
+        let all_moves = board.generate_legal_moves();
+        let mut tactical_moves = Vec::new();
+        
+        for mv in all_moves {
+            // Capturas
+            if self.is_capture(board, mv) {
+                tactical_moves.push(mv);
+            }
+            // Promoções
+            else if mv.promotion.is_some() {
+                tactical_moves.push(mv);
+            }
+        }
+        
+        // Ordena capturas por MVV-LVA
+        tactical_moves.sort_by_key(|&mv| {
+            if self.is_capture(board, mv) {
+                let victim_value = self.get_piece_value(board, mv.to);
+                let attacker_value = self.get_piece_value(board, mv.from);
+                -(victim_value * 10 - attacker_value)
+            } else {
+                0
+            }
+        });
+        
+        tactical_moves
+    }
+    
+    /// Verifica se captura é boa (SEE simplificado)
+    fn is_good_capture(&self, board: &Board, mv: Move) -> bool {
+        if !self.is_capture(board, mv) {
+            return mv.promotion.is_some(); // Promoções sempre boas
+        }
+        
+        let victim_value = self.get_piece_value(board, mv.to);
+        let attacker_value = self.get_piece_value(board, mv.from);
+        
+        // Se vítima vale mais ou igual, provavelmente boa
+        if victim_value >= attacker_value {
+            return true;
+        }
+        
+        // Se diferença muito grande, provavelmente ruim
+        if victim_value + 200 < attacker_value {
+            return false;
+        }
+        
+        true // Casos duvidosos, deixa quiescence decidir
+    }
+    
+    /// Verifica se dá xeque (versão rápida)
+    fn gives_check_fast(&self, board: &Board, mv: Move) -> bool {
+        // Implementação simplificada - poderia ser muito otimizada
+        let mut test_board = *board;
+        if test_board.make_move(mv) {
+            test_board.is_king_in_check(!board.to_move)
+        } else {
+            false
+        }
+    }
+    
+    /// Score de controle do centro expandido
+    fn center_control_score(&self, mv: Move) -> i32 {
+        match mv.to {
+            27 | 28 | 35 | 36 => 50, // e4, d4, e5, d5 - centro puro
+            18 | 19 | 20 | 21 | 26 | 29 | 34 | 37 | 42 | 43 | 44 | 45 => 25, // Centro expandido
+            _ => 0
+        }
+    }
+    
+    /// Verifica se é movimento de desenvolvimento
+    fn is_development_move(&self, board: &Board, mv: Move) -> bool {
+        let from_bb = 1u64 << mv.from;
+        
+        // Cavalos e bispos saindo da fileira inicial
+        if (board.knights & from_bb) != 0 || (board.bishops & from_bb) != 0 {
+            let initial_rank = if board.to_move == Color::White { 
+                mv.from < 16 
+            } else { 
+                mv.from > 47 
+            };
+            return initial_rank;
+        }
+        
+        false
     }
     
     fn is_capture(&self, board: &Board, mv: Move) -> bool {
@@ -358,9 +649,6 @@ impl AlphaBetaTTEngine {
         else { 0 }
     }
     
-    fn is_center_square(&self, square: u8) -> bool {
-        matches!(square, 27 | 28 | 35 | 36) // e4, d4, e5, d5
-    }
     
     /// Verifica se deve parar a busca
     fn should_stop(&self) -> bool {
@@ -402,6 +690,13 @@ impl AlphaBetaTTEngine {
             format!(" pv {}", pv_moves.join(" "))
         };
         
+        // Hashfull da TT compartilhada
+        let hashfull = if let Ok(tt) = self.shared_tt.try_lock() {
+            tt.hashfull()
+        } else {
+            0
+        };
+        
         // UCI standard output format - clean and professional
         print!("info depth {} {} nodes {} nps {} time {} hashfull {} tbhits {} multipv {}{}\n", 
                result.depth, 
@@ -409,7 +704,7 @@ impl AlphaBetaTTEngine {
                result.nodes_searched, 
                nps, 
                time_ms,
-               0, // hashfull (TT não compartilhada no momento)
+               hashfull,
                0, // tbhits
                1, // multipv
                pv
