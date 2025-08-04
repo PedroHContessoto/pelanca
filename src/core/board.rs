@@ -87,7 +87,7 @@ impl Board {
                     sq += 1;
                 }
             }
-            sq -= 16; // Next rank down
+            sq = sq.saturating_sub(16); // Next rank down
         }
 
         // To move (parts[1])
@@ -666,12 +666,30 @@ impl Board {
     /// Executa um movimento e retorna informação para desfazê-lo
     pub fn make_move_with_undo(&mut self, mv: Move) -> UndoInfo {
         let (captured_piece, captured_square) = self.get_captured_piece(mv);
-        let moved_piece = self.get_piece_at(mv.from).unwrap().kind; // Identifica peça movida
-        
+
+        // Guard against moves from empty squares or wrong color
+        let moving_piece = match self.get_piece_at(mv.from) {
+            Some(piece) if piece.color == self.to_move => piece.kind,
+            _ => {
+                // Return a dummy UndoInfo to avoid panic; the caller will skip invalid moves
+                return UndoInfo {
+                    captured_piece: None,
+                    captured_square: 0,
+                    moved_piece: PieceKind::Pawn, // Dummy value
+                    old_castling_rights: self.castling_rights,
+                    old_en_passant_target: self.en_passant_target,
+                    old_halfmove_clock: self.halfmove_clock,
+                    old_zobrist_hash: self.zobrist_hash,
+                    old_white_king_in_check: self.white_king_in_check,
+                    old_black_king_in_check: self.black_king_in_check,
+                };
+            }
+        };
+
         let undo_info = UndoInfo {
             captured_piece,
             captured_square,
-            moved_piece,
+            moved_piece: moving_piece,
             old_castling_rights: self.castling_rights,
             old_en_passant_target: self.en_passant_target,
             old_halfmove_clock: self.halfmove_clock,

@@ -7,16 +7,6 @@ use super::types::*;
 // ============================================================================
 
 // Chaves para peças [cor][tipo_peça][casa]
-// Chaves para peças [cor][tipo_peça][casa]
-// Zobrist hashing para detecção de repetições - OTIMIZADO COM CHAVES PRÉ-COMPUTADAS
-use super::types::*;
-
-// ============================================================================
-// CHAVES ZOBRIST PRÉ-COMPUTADAS PARA PERFORMANCE MÁXIMA
-// Geradas com seed 42 para reprodutibilidade e boa distribuição
-// ============================================================================
-
-// Chaves para peças [cor][tipo_peça][casa]
 pub const PIECES: [[[u64; 64]; 6]; 2] = [
     [
         [

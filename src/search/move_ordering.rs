@@ -1,262 +1,416 @@
-// Sistema de ordenação de movimentos para melhorar a eficiência do alpha-beta
+// Move Ordering - Sistema inteligente de ordena��o de movimentos
+// Cr�tico para efici�ncia do Alpha-Beta: bons movimentos primeiro = mais cortes
 
-use super::*;
 use crate::core::*;
-use std::sync::Arc;
+use crate::search::transposition_table::*;
+use crate::utils::BitboardOps;
 
-/// Estrutura para armazenar killer moves
-pub struct KillerMoves {
-    killers: [[Option<Move>; 2]; 64], // 2 killer moves por ply
-}
+/// Valores para ordenação de movimentos (maior = melhor)
+const MVV_LVA_SCORES: [[i16; 6]; 6] = [
+    // V�tima: P    N    B    R    Q    K
+    [105, 205, 305, 405, 505, 605], // Atacante: Pawn
+    [104, 204, 304, 404, 504, 604], // Atacante: Knight
+    [103, 203, 303, 403, 503, 603], // Atacante: Bishop
+    [102, 202, 302, 402, 502, 602], // Atacante: Rook
+    [101, 201, 301, 401, 501, 601], // Atacante: Queen
+    [100, 200, 300, 400, 500, 600], // Atacante: King
+];
 
-impl KillerMoves {
-    pub fn new() -> Self {
-        KillerMoves {
-            killers: [[None; 2]; 64],
-        }
-    }
+/// Bonus para movimentos especiais
+const PROMOTION_BONUS: i16 = 800;
+const CASTLE_BONUS: i16 = 50;
+const EN_PASSANT_BONUS: i16 = 105; // MVV-LVA equivalente a PxP
 
-    pub fn add_killer(&mut self, mv: Move, ply: usize) {
-        if ply < 64 {
-            // Move o killer anterior para segunda posição
-            self.killers[ply][1] = self.killers[ply][0];
-            // Adiciona novo killer
-            self.killers[ply][0] = Some(mv);
-        }
-    }
+/// Penalidades para movimentos ruins
+const BAD_CAPTURE_PENALTY: i16 = -200;
 
-    pub fn is_killer(&self, mv: Move, ply: usize) -> bool {
-        if ply < 64 {
-            self.killers[ply][0] == Some(mv) || self.killers[ply][1] == Some(mv)
-        } else {
-            false
-        }
-    }
-}
-
-/// Estrutura para history heuristic
+/// Estrutura para armazenar hist�rico de movimentos
 pub struct HistoryTable {
-    history: [[i32; 64]; 64], // [from][to]
+    /// Hist�ria por [cor][from][to]
+    quiet_history: [[[i16; 64]; 64]; 2],
+    /// Hist�ria de capturas por [piece][to][captured_piece]
+    capture_history: [[[i16; 6]; 64]; 6],
+    /// Butterfly boards para normaliza��o
+    butterfly: [[[u32; 64]; 64]; 2],
 }
 
 impl HistoryTable {
     pub fn new() -> Self {
         HistoryTable {
-            history: [[0; 64]; 64],
+            quiet_history: [[[0; 64]; 64]; 2],
+            capture_history: [[[0; 6]; 64]; 6],
+            butterfly: [[[0; 64]; 64]; 2],
         }
     }
 
-    pub fn update(&mut self, mv: Move, depth: u8) {
-        let bonus = (depth * depth) as i32;
-        self.history[mv.from as usize][mv.to as usize] += bonus;
+    /// Atualiza hist�rico para movimento bom
+    pub fn update_good_quiet(&mut self, color: Color, mv: Move, depth: u8) {
+        let color_idx = if color == Color::White { 0 } else { 1 };
+        let bonus = (depth as i16).pow(2).min(400);
+        
+        self.quiet_history[color_idx][mv.from as usize][mv.to as usize] += bonus;
+        self.butterfly[color_idx][mv.from as usize][mv.to as usize] += 1;
+        
+        // Satura��o para evitar overflow
+        if self.quiet_history[color_idx][mv.from as usize][mv.to as usize] > 16000 {
+            self.age_history();
+        }
+    }
 
-        // Previne overflow
-        if self.history[mv.from as usize][mv.to as usize] > 10000 {
-            // Reduz todas as entradas pela metade
+    /// Atualiza hist�rico para movimento ruim
+    pub fn update_bad_quiet(&mut self, color: Color, mv: Move, depth: u8) {
+        let color_idx = if color == Color::White { 0 } else { 1 };
+        let penalty = (depth as i16).pow(2).min(400);
+        
+        self.quiet_history[color_idx][mv.from as usize][mv.to as usize] -= penalty;
+        self.butterfly[color_idx][mv.from as usize][mv.to as usize] += 1;
+    }
+
+    /// Obt�m score do hist�rico
+    pub fn get_quiet_score(&self, color: Color, mv: Move) -> i16 {
+        let color_idx = if color == Color::White { 0 } else { 1 };
+        self.quiet_history[color_idx][mv.from as usize][mv.to as usize]
+    }
+
+    /// Atualiza hist�rico de capturas
+    pub fn update_capture_history(&mut self, board: &Board, mv: Move, good: bool, depth: u8) {
+        if let Some(attacker_piece) = self.get_piece_at_square(board, mv.from) {
+            if let Some(victim_piece) = self.get_captured_piece_kind(board, mv) {
+                let attacker_idx = Self::piece_to_index(attacker_piece);
+                let victim_idx = Self::piece_to_index(victim_piece);
+                let delta = if good { (depth as i16).pow(2) } else { -(depth as i16).pow(2) };
+                
+                self.capture_history[attacker_idx][mv.to as usize][victim_idx] += delta;
+            }
+        }
+    }
+
+    /// Obt�m score do hist�rico de capturas
+    pub fn get_capture_score(&self, board: &Board, mv: Move) -> i16 {
+        if let Some(attacker_piece) = self.get_piece_at_square(board, mv.from) {
+            if let Some(victim_piece) = self.get_captured_piece_kind(board, mv) {
+                let attacker_idx = Self::piece_to_index(attacker_piece);
+                let victim_idx = Self::piece_to_index(victim_piece);
+                return self.capture_history[attacker_idx][mv.to as usize][victim_idx];
+            }
+        }
+        0
+    }
+
+    /// Reduz valores de hist�rico para evitar overflow
+    fn age_history(&mut self) {
+        for color in 0..2 {
             for from in 0..64 {
                 for to in 0..64 {
-                    self.history[from][to] /= 2;
+                    self.quiet_history[color][from][to] /= 2;
+                }
+            }
+        }
+        
+        for piece in 0..6 {
+            for to in 0..64 {
+                for victim in 0..6 {
+                    self.capture_history[piece][to][victim] /= 2;
                 }
             }
         }
     }
 
-    pub fn get_score(&self, mv: Move) -> i32 {
-        self.history[mv.from as usize][mv.to as usize]
+    /// Limpa tabelas de hist�rico
+    pub fn clear(&mut self) {
+        self.quiet_history = [[[0; 64]; 64]; 2];
+        self.capture_history = [[[0; 6]; 64]; 6];
+        self.butterfly = [[[0; 64]; 64]; 2];
+    }
+
+    // Fun��es auxiliares
+
+    fn get_piece_at_square(&self, board: &Board, square: u8) -> Option<PieceKind> {
+        let bb = 1u64 << square;
+        
+        if (board.pawns & bb) != 0 { Some(PieceKind::Pawn) }
+        else if (board.knights & bb) != 0 { Some(PieceKind::Knight) }
+        else if (board.bishops & bb) != 0 { Some(PieceKind::Bishop) }
+        else if (board.rooks & bb) != 0 { Some(PieceKind::Rook) }
+        else if (board.queens & bb) != 0 { Some(PieceKind::Queen) }
+        else if (board.kings & bb) != 0 { Some(PieceKind::King) }
+        else { None }
+    }
+
+    fn get_captured_piece_kind(&self, board: &Board, mv: Move) -> Option<PieceKind> {
+        if mv.is_en_passant {
+            return Some(PieceKind::Pawn);
+        }
+        
+        let to_bb = 1u64 << mv.to;
+        let enemy_pieces = if board.to_move == Color::White { 
+            board.black_pieces 
+        } else { 
+            board.white_pieces 
+        };
+        
+        if (enemy_pieces & to_bb) == 0 {
+            return None;
+        }
+        
+        self.get_piece_at_square(board, mv.to)
+    }
+
+    fn piece_to_index(piece: PieceKind) -> usize {
+        match piece {
+            PieceKind::Pawn => 0,
+            PieceKind::Knight => 1,
+            PieceKind::Bishop => 2,
+            PieceKind::Rook => 3,
+            PieceKind::Queen => 4,
+            PieceKind::King => 5,
+        }
     }
 }
 
-/// Ordena movimentos para melhorar a eficiência do alpha-beta
-pub fn order_moves(
-    board: &Board,
-    moves: &mut Vec<Move>,
-    tt_move: Option<Move>,
-    ply: i32,
-    controller: &Arc<SearchController>
-) {
-    // Calcula scores para cada movimento
-    let mut move_scores: Vec<(Move, i32)> = moves.iter().map(|&mv| {
-        let score = score_move(board, mv, tt_move, ply);
-        (mv, score)
-    }).collect();
-
-    // Ordena por score decrescente
-    move_scores.sort_by(|a, b| b.1.cmp(&a.1));
-
-    // Atualiza vetor original
-    for (i, (mv, _)) in move_scores.into_iter().enumerate() {
-        moves[i] = mv;
-    }
+/// Sistema de ordena��o de movimentos
+pub struct MoveOrderer {
+    history: HistoryTable,
 }
 
-/// Calcula score de um movimento para ordenação
-fn score_move(
-    board: &Board,
-    mv: Move,
-    tt_move: Option<Move>,
-    _ply: i32,
-) -> i32 {
-    let mut score = 0;
-
-    // 1. Movimento da transposition table tem prioridade máxima
-    if Some(mv) == tt_move {
-        return 1_000_000;
+impl MoveOrderer {
+    pub fn new() -> Self {
+        MoveOrderer {
+            history: HistoryTable::new(),
+        }
     }
 
-    // 2. Capturas ordenadas por MVV-LVA
-    if is_capture_move(board, mv) {
-        score += mvv_lva_score(board, mv);
+    /// Ordena lista de movimentos para m�xima efici�ncia Alpha-Beta
+    pub fn order_moves(&self, board: &Board, moves: &mut Vec<Move>, tt_move: Option<Move>, ply: u16) {
+        // Calcula scores para todos os movimentos
+        let mut move_scores: Vec<(Move, i16)> = moves.iter()
+            .map(|&mv| (mv, self.score_move(board, mv, tt_move, ply)))
+            .collect();
+
+        // Ordena por score (maior primeiro)
+        move_scores.sort_by(|a, b| b.1.cmp(&a.1));
+
+        // Atualiza a lista original
+        *moves = move_scores.into_iter().map(|(mv, _)| mv).collect();
     }
 
-    // 3. Promoções
-    if let Some(promo) = mv.promotion {
-        score += match promo {
-            PieceKind::Queen => 90000,
-            PieceKind::Rook => 50000,
-            PieceKind::Bishop => 30000,
-            PieceKind::Knight => 30000,
+    /// Calcula score de um movimento para ordena��o
+    fn score_move(&self, board: &Board, mv: Move, tt_move: Option<Move>, _ply: u16) -> i16 {
+        // 1. Movimento da TT tem prioridade m�xima
+        if let Some(tt_mv) = tt_move {
+            if mv.from == tt_mv.from && mv.to == tt_mv.to && mv.promotion == tt_mv.promotion {
+                return 10000;
+            }
+        }
+
+        let mut score = 0;
+
+        // 2. Promo��es (especialmente rainha)
+        if let Some(promotion) = mv.promotion {
+            score += PROMOTION_BONUS;
+            if promotion == PieceKind::Queen {
+                score += 200;
+            }
+        }
+
+        // 3. Capturas usando MVV-LVA
+        if self.is_capture(board, mv) {
+            score += self.mvv_lva_score(board, mv);
+            
+            // Bonus do hist�rico de capturas
+            score += self.history.get_capture_score(board, mv) / 10;
+            
+            // Penaliza capturas ruins (SEE negativo)
+            if self.is_bad_capture(board, mv) {
+                score += BAD_CAPTURE_PENALTY;
+            }
+        } else {
+            // 4. Movimentos silenciosos: hist�rico + heur�sticas
+            score += self.history.get_quiet_score(board.to_move, mv) / 10;
+            
+            // Bonus para roque
+            if mv.is_castling {
+                score += CASTLE_BONUS;
+            }
+            
+            // Heur�sticas posicionais b�sicas
+            score += self.positional_score(board, mv);
+        }
+
+        // 5. En passant
+        if mv.is_en_passant {
+            score += EN_PASSANT_BONUS;
+        }
+
+        score
+    }
+
+    /// Verifica se movimento � captura
+    fn is_capture(&self, board: &Board, mv: Move) -> bool {
+        if mv.is_en_passant {
+            return true;
+        }
+        
+        let to_bb = 1u64 << mv.to;
+        let enemy_pieces = if board.to_move == Color::White { 
+            board.black_pieces 
+        } else { 
+            board.white_pieces 
+        };
+        
+        (enemy_pieces & to_bb) != 0
+    }
+
+    /// Calcula score MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
+    fn mvv_lva_score(&self, board: &Board, mv: Move) -> i16 {
+        let attacker = self.get_piece_at_square(board, mv.from);
+        let victim = if mv.is_en_passant {
+            Some(PieceKind::Pawn)
+        } else {
+            self.get_piece_at_square(board, mv.to)
+        };
+
+        match (attacker, victim) {
+            (Some(att), Some(vic)) => {
+                let att_idx = Self::piece_to_index(att);
+                let vic_idx = Self::piece_to_index(vic);
+                MVV_LVA_SCORES[att_idx][vic_idx]
+            }
             _ => 0,
-        };
+        }
     }
 
-    // 4. Killer moves
-    // TODO: Implementar killer moves globalmente
-
-    // 5. History heuristic
-    // TODO: Implementar history heuristic globalmente
-
-    // 6. Movimentos que dão xeque
-    if gives_check(board, mv) {
-        score += 5000;
-    }
-
-    // 7. Roque geralmente é bom
-    if mv.is_castling {
-        score += 3000;
-    }
-
-    // 8. Penaliza movimentos para trás (exceto capturas)
-    if !is_capture_move(board, mv) {
-        if board.to_move == Color::White {
-            if mv.to / 8 < mv.from / 8 {
-                score -= 10;
-            }
+    /// Verifica se captura � ruim usando SEE aproximado
+    fn is_bad_capture(&self, board: &Board, mv: Move) -> bool {
+        // Implementa��o simplificada de SEE (Static Exchange Evaluation)
+        // Em vers�o completa, calcularia todas as trocas poss�veis
+        
+        let attacker_value = self.get_piece_value(board, mv.from);
+        let victim_value = if mv.is_en_passant {
+            100 // Valor do pe�o
         } else {
-            if mv.to / 8 > mv.from / 8 {
-                score -= 10;
+            self.get_piece_value(board, mv.to)
+        };
+        
+        // Se a v�tima vale menos que o atacante e est� defendida, pode ser ruim
+        if victim_value < attacker_value {
+            // Verifica se casa de destino est� defendida
+            return self.is_square_defended(board, mv.to, !board.to_move);
+        }
+        
+        false
+    }
+
+    /// Calcula score posicional b�sico para movimentos silenciosos
+    fn positional_score(&self, board: &Board, mv: Move) -> i16 {
+        let mut score = 0;
+        
+        // Movimento para centro
+        let to_file = (mv.to % 8) as i16;
+        let to_rank = (mv.to / 8) as i16;
+        let center_distance = (3.5 - to_file as f32).abs() + (3.5 - to_rank as f32).abs();
+        score += (10.0 - center_distance * 2.0) as i16;
+        
+        // Desenvolvimento de pe�as (cavalos e bispos para casa melhor)
+        if let Some(piece) = self.get_piece_at_square(board, mv.from) {
+            match piece {
+                PieceKind::Knight | PieceKind::Bishop => {
+                    // Bonus por sair da primeira fileira
+                    let from_rank = mv.from / 8;
+                    let to_rank = mv.to / 8;
+                    
+                    if board.to_move == Color::White {
+                        if from_rank == 0 && to_rank > 0 {
+                            score += 20;
+                        }
+                    } else {
+                        if from_rank == 7 && to_rank < 7 {
+                            score += 20;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        
+        score
+    }
+
+    /// Atualiza hist�rico ap�s beta cutoff
+    pub fn update_history_cutoff(&mut self, board: &Board, mv: Move, depth: u8, quiet_moves: &[Move]) {
+        if self.is_capture(board, mv) {
+            // Movimento que causou cutoff � bom
+            self.history.update_capture_history(board, mv, true, depth);
+        } else {
+            // Movimento silencioso que causou cutoff
+            self.history.update_good_quiet(board.to_move, mv, depth);
+        }
+        
+        // Movimentos tentados antes do cutoff s�o ruins
+        for &bad_move in quiet_moves {
+            if bad_move.from != mv.from || bad_move.to != mv.to {
+                if self.is_capture(board, bad_move) {
+                    self.history.update_capture_history(board, bad_move, false, depth);
+                } else {
+                    self.history.update_bad_quiet(board.to_move, bad_move, depth);
+                }
             }
         }
     }
 
-    score
-}
+    /// Limpa tabelas de hist�rico
+    pub fn clear_history(&mut self) {
+        self.history.clear();
+    }
 
-/// MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
-fn mvv_lva_score(board: &Board, mv: Move) -> i32 {
-    let mut score = 100000; // Base para capturas
+    // Fun��es auxiliares
 
-    // Identifica peça atacante
-    let from_bb = 1u64 << mv.from;
-    let attacker_value = if (board.pawns & from_bb) != 0 { 100 }
-    else if (board.knights & from_bb) != 0 { 320 }
-    else if (board.bishops & from_bb) != 0 { 330 }
-    else if (board.rooks & from_bb) != 0 { 500 }
-    else if (board.queens & from_bb) != 0 { 900 }
-    else { 10000 }; // Rei
+    fn get_piece_at_square(&self, board: &Board, square: u8) -> Option<PieceKind> {
+        let bb = 1u64 << square;
+        
+        if (board.pawns & bb) != 0 { Some(PieceKind::Pawn) }
+        else if (board.knights & bb) != 0 { Some(PieceKind::Knight) }
+        else if (board.bishops & bb) != 0 { Some(PieceKind::Bishop) }
+        else if (board.rooks & bb) != 0 { Some(PieceKind::Rook) }
+        else if (board.queens & bb) != 0 { Some(PieceKind::Queen) }
+        else if (board.kings & bb) != 0 { Some(PieceKind::King) }
+        else { None }
+    }
 
-    // Identifica peça capturada
-    let to_bb = 1u64 << mv.to;
-    let victim_value = if mv.is_en_passant {
-        100 // Peão en passant
-    } else if (board.pawns & to_bb) != 0 { 100 }
-    else if (board.knights & to_bb) != 0 { 320 }
-    else if (board.bishops & to_bb) != 0 { 330 }
-    else if (board.rooks & to_bb) != 0 { 500 }
-    else if (board.queens & to_bb) != 0 { 900 }
-    else { 0 };
-
-    // MVV-LVA: capturar peças valiosas com peças baratas é melhor
-    score += victim_value * 10 - attacker_value;
-
-    score
-}
-
-/// Verifica se um movimento é captura
-fn is_capture_move(board: &Board, mv: Move) -> bool {
-    let to_bb = 1u64 << mv.to;
-    let enemy_pieces = if board.to_move == Color::White {
-        board.black_pieces
-    } else {
-        board.white_pieces
-    };
-
-    (enemy_pieces & to_bb) != 0 || mv.is_en_passant
-}
-
-/// Verifica se um movimento dá xeque
-fn gives_check(board: &Board, mv: Move) -> bool {
-    // Implementação simplificada - idealmente faria uma simulação rápida
-    let from_bb = 1u64 << mv.from;
-
-    // Verifica se é um movimento de cavalo que pode dar xeque
-    if (board.knights & from_bb) != 0 {
-        let enemy_king = board.kings & if board.to_move == Color::White {
-            board.black_pieces
+    fn get_piece_value(&self, board: &Board, square: u8) -> i16 {
+        if let Some(piece) = self.get_piece_at_square(board, square) {
+            match piece {
+                PieceKind::Pawn => 100,
+                PieceKind::Knight => 320,
+                PieceKind::Bishop => 330,
+                PieceKind::Rook => 500,
+                PieceKind::Queen => 900,
+                PieceKind::King => 20000,
+            }
         } else {
-            board.white_pieces
-        };
-
-        if enemy_king != 0 {
-            let king_sq = enemy_king.trailing_zeros() as u8;
-            let knight_attacks = crate::moves::knight::get_knight_attacks(mv.to);
-            return (knight_attacks & (1u64 << king_sq)) != 0;
+            0
         }
     }
 
-    // TODO: Implementar verificação completa para outras peças
-    false
+    fn is_square_defended(&self, board: &Board, square: u8, by_color: Color) -> bool {
+        // Implementa��o b�sica - verifica se h� pe�as da cor especificada atacando a casa
+        board.is_square_attacked_by(square, by_color)
+    }
+
+    fn piece_to_index(piece: PieceKind) -> usize {
+        match piece {
+            PieceKind::Pawn => 0,
+            PieceKind::Knight => 1,
+            PieceKind::Bishop => 2,
+            PieceKind::Rook => 3,
+            PieceKind::Queen => 4,
+            PieceKind::King => 5,
+        }
+    }
 }
 
-/// Ordena apenas capturas para busca de quiescência
-pub fn order_captures(board: &Board, moves: &mut Vec<Move>) {
-    // Filtra apenas capturas
-    moves.retain(|&mv| is_capture_move(board, mv));
-
-    // Ordena por MVV-LVA
-    moves.sort_by_key(|&mv| -mvv_lva_score(board, mv));
-}
-
-/// SEE (Static Exchange Evaluation) simplificado
-pub fn see_capture(board: &Board, mv: Move) -> i32 {
-    // Implementação simplificada do SEE
-    // Retorna valor estimado da captura considerando possíveis recapturas
-
-    let to_bb = 1u64 << mv.to;
-    let from_bb = 1u64 << mv.from;
-
-    // Valor da peça capturada
-    let captured_value = if mv.is_en_passant {
-        100
-    } else if (board.pawns & to_bb) != 0 { 100 }
-    else if (board.knights & to_bb) != 0 { 320 }
-    else if (board.bishops & to_bb) != 0 { 330 }
-    else if (board.rooks & to_bb) != 0 { 500 }
-    else if (board.queens & to_bb) != 0 { 900 }
-    else { 0 };
-
-    // Valor da peça atacante
-    let attacker_value = if (board.pawns & from_bb) != 0 { 100 }
-    else if (board.knights & from_bb) != 0 { 320 }
-    else if (board.bishops & from_bb) != 0 { 330 }
-    else if (board.rooks & from_bb) != 0 { 500 }
-    else if (board.queens & from_bb) != 0 { 900 }
-    else { 10000 };
-
-    // Estimativa simples: assume que o oponente pode recapturar
-    // se a peça atacante vale menos que a capturada
-    if attacker_value < captured_value {
-        captured_value // Boa troca
-    } else {
-        captured_value - attacker_value // Pode perder material
+impl Default for MoveOrderer {
+    fn default() -> Self {
+        Self::new()
     }
 }

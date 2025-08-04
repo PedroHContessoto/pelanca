@@ -1,273 +1,273 @@
-// Busca de quiescência para evitar efeito horizonte
+// Quiescence Search - Busca de estabilização para evitar "horizon effect"
+// Continua buscando apenas capturas at� posi��o "quieta" (sem capturas pendentes)
 
-use super::*;
 use crate::core::*;
+use crate::search::{evaluation::Evaluator, move_ordering::MoveOrderer, transposition_table::*};
 use std::sync::Arc;
 
-/// Busca de quiescência - avalia apenas capturas para estabilizar a avaliação
+/// Profundidade m�xima para quiescence search
+const MAX_QUIESCENCE_DEPTH: i8 = 10;
+
+/// Delta pruning threshold - n�o considera capturas pequenas se posi��o est� muito ruim
+const DELTA_PRUNING_MARGIN: i16 = 200;
+
+/// Futility pruning para quiescence - ignora capturas pequenas em posi��es ruins
+const FUTILITY_MARGIN: i16 = 150;
+
+/// Estrutura para busca de quiescence
+pub struct QuiescenceSearcher {
+    pub nodes_searched: u64,
+    move_orderer: MoveOrderer,
+}
+
+impl QuiescenceSearcher {
+    pub fn new() -> Self {
+        QuiescenceSearcher {
+            nodes_searched: 0,
+            move_orderer: MoveOrderer::new(),
+        }
+    }
+
+    /// Busca principal de quiescence
+    pub fn search(
+        &mut self,
+        board: &mut Board,
+        mut alpha: i16,
+        beta: i16,
+        depth: i8,
+        ply: u16,
+        tt: Option<&Arc<TranspositionTable>>,
+    ) -> i16 {
+        self.nodes_searched += 1;
+
+        // Verifica limites de profundidade
+        if depth <= -MAX_QUIESCENCE_DEPTH {
+            return Evaluator::evaluate(board);
+        }
+
+        // Verifica draw por repeti��o ou 50 movimentos
+        if board.is_draw_by_50_moves() {
+            return 0;
+        }
+
+        // Probe da tabela de transposi��o
+        if let Some(tt_ref) = tt {
+            if let Some(tt_entry) = tt_ref.probe(board.zobrist_hash) {
+                if tt_entry.depth >= depth as u8 {
+                    let tt_score = adjust_mate_score(tt_entry.score, ply);
+                    match tt_entry.node_type {
+                        NodeType::Exact => return tt_score,
+                        NodeType::LowerBound => {
+                            if tt_score >= beta {
+                                return tt_score;
+                            }
+                        }
+                        NodeType::UpperBound => {
+                            if tt_score <= alpha {
+                                return tt_score;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Avalia��o est�tica (stand pat)
+        let static_eval = Evaluator::evaluate(board);
+        
+        // Stand pat: se posi��o j� � boa o suficiente, n�o precisa capturar
+        if static_eval >= beta {
+            return beta; // Beta cutoff
+        }
+        
+        // Atualiza alpha se necess�rio
+        if static_eval > alpha {
+            alpha = static_eval;
+        }
+
+        // Delta pruning: se mesmo capturando a rainha n�o melhoraria alpha, para
+        if static_eval + 900 + DELTA_PRUNING_MARGIN < alpha && depth < 0 {
+            return static_eval;
+        }
+
+        // Gera apenas movimentos de captura
+        let captures = self.generate_captures(board);
+        
+        if captures.is_empty() {
+            return static_eval; // Posi��o quieta
+        }
+
+        // Ordena capturas por MVV-LVA
+        let mut ordered_captures = captures;
+        self.move_orderer.order_moves(board, &mut ordered_captures, None, ply);
+
+        let mut best_score = static_eval;
+        let mut node_type = NodeType::UpperBound;
+        let mut best_move = ordered_captures[0]; // Fallback
+
+        // Loop principal de busca
+        for (move_index, &mv) in ordered_captures.iter().enumerate() {
+            // Futility pruning: ignora capturas pequenas em posi��es ruins
+            if depth < 0 && move_index > 0 {
+                let capture_value = self.estimate_capture_value(board, mv);
+                if static_eval + capture_value + FUTILITY_MARGIN < alpha {
+                    continue;
+                }
+            }
+
+            // SEE pruning: ignora capturas claramente perdedoras
+            if depth < -2 && self.is_losing_capture(board, mv) {
+                continue;
+            }
+
+            // Faz o movimento
+            let undo_info = board.make_move_with_undo(mv);
+            let previous_to_move = !board.to_move;
+            
+            // Verifica se movimento � legal
+            if board.is_king_in_check(previous_to_move) {
+                board.unmake_move(mv, undo_info);
+                continue;
+            }
+
+            // Busca recursiva
+            let score = -self.search(board, -beta, -alpha, depth - 1, ply + 1, tt);
+            
+            // Desfaz movimento
+            board.unmake_move(mv, undo_info);
+
+            // Atualiza melhor score
+            if score > best_score {
+                best_score = score;
+                best_move = mv;
+                
+                if score > alpha {
+                    alpha = score;
+                    node_type = NodeType::Exact;
+                    
+                    // Beta cutoff
+                    if score >= beta {
+                        node_type = NodeType::LowerBound;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Armazena resultado na TT
+        if let Some(tt_ref) = tt {
+            let tt_score = unadjust_mate_score(best_score, ply);
+            tt_ref.store(board.zobrist_hash, best_move, tt_score, (-depth) as u8, node_type);
+        }
+
+        best_score
+    }
+
+    /// Gera apenas movimentos de captura e promo��es
+    fn generate_captures(&self, board: &Board) -> Vec<Move> {
+        let all_moves = board.generate_all_moves();
+        
+        all_moves.into_iter()
+            .filter(|&mv| self.is_tactical_move(board, mv))
+            .collect()
+    }
+
+    /// Verifica se movimento � t�tico (captura, promo��o, en passant)
+    fn is_tactical_move(&self, board: &Board, mv: Move) -> bool {
+        // Promo��es sempre s�o consideradas t�ticas
+        if mv.promotion.is_some() {
+            return true;
+        }
+        
+        // En passant � captura
+        if mv.is_en_passant {
+            return true;
+        }
+        
+        // Verifica se � captura normal
+        let to_bb = 1u64 << mv.to;
+        let enemy_pieces = if board.to_move == Color::White { 
+            board.black_pieces 
+        } else { 
+            board.white_pieces 
+        };
+        
+        (enemy_pieces & to_bb) != 0
+    }
+
+    /// Estima valor aproximado da captura
+    fn estimate_capture_value(&self, board: &Board, mv: Move) -> i16 {
+        if mv.is_en_passant {
+            return 100; // Valor do pe�o
+        }
+        
+        if let Some(promotion) = mv.promotion {
+            let promo_value = match promotion {
+                PieceKind::Queen => 900,
+                PieceKind::Rook => 500,
+                PieceKind::Bishop => 330,
+                PieceKind::Knight => 320,
+                _ => 0,
+            };
+            return promo_value - 100; // Desconta valor do pe�o promovido
+        }
+        
+        // Valor da pe�a capturada
+        self.get_piece_value_at_square(board, mv.to)
+    }
+
+    /// Verifica se captura � claramente perdedora (SEE negativo)
+    fn is_losing_capture(&self, board: &Board, mv: Move) -> bool {
+        let attacker_value = self.get_piece_value_at_square(board, mv.from);
+        let victim_value = if mv.is_en_passant { 100 } else { self.get_piece_value_at_square(board, mv.to) };
+        
+        // Heur�stica simples: se atacante vale muito mais que v�tima e casa est� defendida
+        if attacker_value > victim_value + 200 {
+            return board.is_square_attacked_by(mv.to, !board.to_move);
+        }
+        
+        false
+    }
+
+    /// Obt�m valor da pe�a em uma casa espec�fica
+    fn get_piece_value_at_square(&self, board: &Board, square: u8) -> i16 {
+        let bb = 1u64 << square;
+        
+        if (board.pawns & bb) != 0 { 100 }
+        else if (board.knights & bb) != 0 { 320 }
+        else if (board.bishops & bb) != 0 { 330 }
+        else if (board.rooks & bb) != 0 { 500 }
+        else if (board.queens & bb) != 0 { 900 }
+        else if (board.kings & bb) != 0 { 20000 }
+        else { 0 }
+    }
+
+    /// Limpa estat�sticas
+    pub fn clear_stats(&mut self) {
+        self.nodes_searched = 0;
+    }
+
+    /// Retorna estat�sticas
+    pub fn get_stats(&self) -> (u64,) {
+        (self.nodes_searched,)
+    }
+}
+
+impl Default for QuiescenceSearcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Fun��o auxiliar para busca de quiescence sem estado
 pub fn quiescence_search(
     board: &mut Board,
-    mut alpha: i32,
-    beta: i32,
-    ply: i32,
-    controller: &Arc<SearchController>
-) -> i32 {
-    // Verifica parada
-    if controller.should_stop() {
-        return 0;
-    }
-
-    controller.increment_nodes(1);
-
-    // Avaliação estática como baseline
-    let stand_pat = evaluate(board);
-
-    // Beta cutoff
-    if stand_pat >= beta {
-        return beta;
-    }
-
-    // Delta pruning - se estamos muito abaixo de alpha, apenas capturas muito boas ajudariam
-    const DELTA_MARGIN: i32 = 900; // Valor de uma rainha
-    if stand_pat < alpha - DELTA_MARGIN {
-        return alpha;
-    }
-
-    // Atualiza alpha
-    if stand_pat > alpha {
-        alpha = stand_pat;
-    }
-
-    // Profundidade máxima da quiescência
-    if ply > 32 {
-        return stand_pat;
-    }
-
-    // Gera apenas capturas e promoções
-    let moves = generate_captures_and_promotions(board);
-
-    // Se não há capturas, retorna avaliação estática
-    if moves.is_empty() {
-        return stand_pat;
-    }
-
-    // Ordena capturas por MVV-LVA
-    let mut ordered_moves = moves;
-    order_captures(board, &mut ordered_moves);
-
-    // Busca apenas capturas promissoras
-    for &mv in &ordered_moves {
-        // SEE pruning - pula capturas ruins
-        if !is_promotion(mv) && see_capture(board, mv) < 0 {
-            continue;
-        }
-
-        let undo_info = board.make_move_with_undo(mv);
-
-        if !board.is_king_in_check(!board.to_move) {
-            let score = -quiescence_search(board, -beta, -alpha, ply + 1, controller);
-
-            board.unmake_move(mv, undo_info);
-
-            if score >= beta {
-                return beta; // Beta cutoff
-            }
-
-            if score > alpha {
-                alpha = score;
-            }
-        } else {
-            board.unmake_move(mv, undo_info);
-        }
-
-        if controller.should_stop() {
-            break;
-        }
-    }
-
-    alpha
-}
-
-/// Gera apenas capturas e promoções para busca de quiescência
-fn generate_captures_and_promotions(board: &Board) -> Vec<Move> {
-    let mut moves = Vec::with_capacity(32);
-
-    // Gera capturas de peões (incluindo en passant)
-    moves.extend(crate::moves::pawn::generate_pawn_captures(board));
-
-    // Gera capturas de outras peças
-    let our_pieces = if board.to_move == Color::White {
-        board.white_pieces
-    } else {
-        board.black_pieces
-    };
-
-    let enemy_pieces = if board.to_move == Color::White {
-        board.black_pieces
-    } else {
-        board.white_pieces
-    };
-
-    let all_pieces = board.white_pieces | board.black_pieces;
-
-    // Cavalos
-    let mut knights = board.knights & our_pieces;
-    while knights != 0 {
-        let from = knights.trailing_zeros() as u8;
-        let attacks = crate::moves::knight::get_knight_attacks(from) & enemy_pieces;
-        add_moves_from_bitboard(&mut moves, from, attacks);
-        knights &= knights - 1;
-    }
-
-    // Bispos
-    let mut bishops = board.bishops & our_pieces;
-    while bishops != 0 {
-        let from = bishops.trailing_zeros() as u8;
-        let attacks = crate::moves::sliding::get_bishop_attacks(from, all_pieces) & enemy_pieces;
-        add_moves_from_bitboard(&mut moves, from, attacks);
-        bishops &= bishops - 1;
-    }
-
-    // Torres
-    let mut rooks = board.rooks & our_pieces;
-    while rooks != 0 {
-        let from = rooks.trailing_zeros() as u8;
-        let attacks = crate::moves::sliding::get_rook_attacks(from, all_pieces) & enemy_pieces;
-        add_moves_from_bitboard(&mut moves, from, attacks);
-        rooks &= rooks - 1;
-    }
-
-    // Rainhas
-    let mut queens = board.queens & our_pieces;
-    while queens != 0 {
-        let from = queens.trailing_zeros() as u8;
-        let attacks = crate::moves::queen::get_queen_attacks(from, all_pieces) & enemy_pieces;
-        add_moves_from_bitboard(&mut moves, from, attacks);
-        queens &= queens - 1;
-    }
-
-    // Rei (apenas capturas)
-    let mut kings = board.kings & our_pieces;
-    if kings != 0 {
-        let from = kings.trailing_zeros() as u8;
-        let attacks = crate::moves::king::get_king_attacks(from) & enemy_pieces;
-        add_moves_from_bitboard(&mut moves, from, attacks);
-    }
-
-    moves
-}
-
-/// Adiciona movimentos de um bitboard de destinos
-fn add_moves_from_bitboard(moves: &mut Vec<Move>, from: u8, mut targets: Bitboard) {
-    while targets != 0 {
-        let to = targets.trailing_zeros() as u8;
-        moves.push(Move {
-            from,
-            to,
-            promotion: None,
-            is_castling: false,
-            is_en_passant: false,
-        });
-        targets &= targets - 1;
-    }
-}
-
-/// Verifica se é uma promoção
-fn is_promotion(mv: Move) -> bool {
-    mv.promotion.is_some()
-}
-
-/// Busca de quiescência específica para finais de jogo
-pub fn endgame_quiescence(
-    board: &mut Board,
-    mut alpha: i32,
-    beta: i32,
-    ply: i32,
-    controller: &Arc<SearchController>
-) -> i32 {
-    // Em finais, também considera movimentos que dão xeque
-    if controller.should_stop() {
-        return 0;
-    }
-
-    controller.increment_nodes(1);
-
-    // Verifica se é posição terminal
-    if board.is_checkmate() {
-        return -MATE_SCORE + ply;
-    }
-
-    if board.is_stalemate() || board.is_draw_by_insufficient_material() || board.is_draw_by_50_moves() {
-        return DRAW_SCORE;
-    }
-
-    let stand_pat = evaluate(board);
-
-    if stand_pat >= beta {
-        return beta;
-    }
-
-    if stand_pat > alpha {
-        alpha = stand_pat;
-    }
-
-    if ply > 64 {
-        return stand_pat;
-    }
-
-    // Em finais, também gera movimentos que dão xeque
-    let mut moves = generate_captures_and_promotions(board);
-
-    // Adiciona movimentos de xeque (simplificado)
-    if board.is_king_in_check(board.to_move) {
-        // Se em xeque, precisa gerar todos os movimentos
-        moves = board.generate_all_moves();
-    }
-
-    if moves.is_empty() {
-        return stand_pat;
-    }
-
-    // Ordena movimentos
-    order_moves(board, &mut moves, None, ply, controller);
-
-    let mut legal_moves = 0;
-
-    for &mv in &moves {
-        let undo_info = board.make_move_with_undo(mv);
-
-        if !board.is_king_in_check(!board.to_move) {
-            legal_moves += 1;
-
-            let score = -endgame_quiescence(board, -beta, -alpha, ply + 1, controller);
-
-            board.unmake_move(mv, undo_info);
-
-            if score >= beta {
-                return beta;
-            }
-
-            if score > alpha {
-                alpha = score;
-            }
-
-            // Em finais, limita número de movimentos explorados
-            if legal_moves >= 10 && !board.is_king_in_check(board.to_move) {
-                break;
-            }
-        } else {
-            board.unmake_move(mv, undo_info);
-        }
-
-        if controller.should_stop() {
-            break;
-        }
-    }
-
-    // Se não há movimentos legais e estamos em xeque, é mate
-    if legal_moves == 0 && board.is_king_in_check(board.to_move) {
-        return -MATE_SCORE + ply;
-    }
-
-    alpha
+    alpha: i16,
+    beta: i16,
+    depth: i8,
+    ply: u16,
+    tt: Option<&Arc<TranspositionTable>>,
+) -> i16 {
+    let mut qsearcher = QuiescenceSearcher::new();
+    qsearcher.search(board, alpha, beta, depth, ply, tt)
 }

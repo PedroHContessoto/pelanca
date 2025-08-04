@@ -64,7 +64,9 @@ impl UCIEngine {
 
         // Limpa TT se existir
         if let Some(ref controller) = self.search_controller {
-            controller.tt.clear();
+            if let Ok(mut tt) = controller.tt.lock() {
+                tt.clear();
+            }
         }
     }
 
