@@ -1,14 +1,9 @@
-// Alpha-Beta Search - Núcleo do motor de xadrez
-// Implementação otimizada com técnicas avançadas: TT, Move Ordering, Pruning, etc.
-
 use crate::core::*;
 use crate::search::{*, evaluation::Evaluator, move_ordering::MoveOrderer, quiescence::*, transposition_table::*};
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 
-/// Valores para detecção de mate
-const MATE_SCORE: i16 = 30000;
-const MATE_IN_MAX_PLY: i16 = MATE_SCORE - 1000;
+pub const MATE_SCORE: i16 = 30000;
+pub const MATE_IN_MAX_PLY: i16 = MATE_SCORE - 1000;
 
 /// Limites de busca
 const MAX_SEARCH_DEPTH: u8 = 64;
@@ -24,41 +19,33 @@ const RAZORING_MARGIN: [i16; 4] = [0, 240, 280, 300];
 const LMR_DEPTH_THRESHOLD: u8 = 3;
 const LMR_MOVE_THRESHOLD: usize = 4;
 
-/// Estrutura principal do motor de busca Alpha-Beta
 pub struct AlphaBetaSearcher {
     pub controller: Arc<SearchController>,
     pub move_orderer: MoveOrderer,
     pub qsearcher: QuiescenceSearcher,
+    pub thread_id: usize,
     
-    // Estatísticas
-    pub nodes_searched: u64,
-    pub tt_hits: u64,
-    pub tt_misses: u64,
-    pub beta_cutoffs: u64,
-    pub first_move_cutoffs: u64,
+    pub nodes_searched: AtomicU64,
+    pub beta_cutoffs: AtomicU64,
+    pub first_move_cutoffs: AtomicU64,
     
-    // Melhor movimento encontrado
     pub best_move: Option<Move>,
     pub principal_variation: Vec<Move>,
     
-    // Killer moves para cada ply
     killer_moves: [[Option<Move>; 2]; MAX_PLY as usize],
-    
-    // Counter moves
     counter_moves: [[Option<Move>; 64]; 64],
 }
 
 impl AlphaBetaSearcher {
-    pub fn new(controller: Arc<SearchController>) -> Self {
+    pub fn new(controller: Arc<SearchController>, thread_id: usize) -> Self {
         AlphaBetaSearcher {
             controller,
             move_orderer: MoveOrderer::new(),
             qsearcher: QuiescenceSearcher::new(),
-            nodes_searched: 0,
-            tt_hits: 0,
-            tt_misses: 0,
-            beta_cutoffs: 0,
-            first_move_cutoffs: 0,
+            thread_id,
+            nodes_searched: AtomicU64::new(0),
+            beta_cutoffs: AtomicU64::new(0),
+            first_move_cutoffs: AtomicU64::new(0),
             best_move: None,
             principal_variation: Vec::new(),
             killer_moves: [[None; 2]; MAX_PLY as usize],
@@ -66,118 +53,82 @@ impl AlphaBetaSearcher {
         }
     }
 
-    /// Busca iterativa com aprofundamento progressivo
-    pub fn iterative_deepening(&mut self, board: &mut Board) -> (Move, SearchStats) {
-        let start_time = Instant::now();
-        self.clear_search_data();
-        
-        let mut best_move = None;
-        let mut best_score = 0i16;
-        let mut depth_completed = 0u8;
-
-        // Obtém lista inicial de movimentos
-        let root_moves = board.generate_legal_moves();
-        if root_moves.is_empty() {
-            // Não há movimentos legais
-            let dummy_move = Move {
-                from: 0, to: 0, promotion: None,
-                is_castling: false, is_en_passant: false,
-            };
-            return (dummy_move, self.get_search_stats(start_time, depth_completed));
+    pub fn search_root(&mut self, board: &mut Board, alpha: i16, beta: i16, depth: u8) -> i16 {
+        if self.controller.should_stop() {
+            return 0;
         }
 
-        // Se só há um movimento legal, não precisa buscar muito
-        if root_moves.len() == 1 {
-            best_move = Some(root_moves[0]);
-        }
-
-        // Busca iterativa
-        for depth in 1..=self.controller.config.max_depth {
-            if self.controller.should_stop() {
-                break;
-            }
-
-            let iteration_start = Instant::now();
-            
-            // Aspiration Windows para depths > 4
-            let (window_alpha, window_beta) = if depth <= 4 || best_move.is_none() {
-                (-MATE_SCORE, MATE_SCORE) // Full window
-            } else {
-                let aspiration_window = 50;
-                (best_score - aspiration_window, best_score + aspiration_window)
-            };
-
-            let mut alpha = window_alpha;
-            let mut beta = window_beta;
-            let mut search_score;
-
-            // Loop de re-search se sair da aspiration window
-            loop {
-                search_score = self.alpha_beta_root(board, alpha, beta, depth, 0);
-                
-                if self.controller.should_stop() {
-                    break;
-                }
-
-                // Verifica se precisa expandir a janela
-                if search_score <= alpha {
-                    // Fail-low: expande alpha
-                    alpha = -MATE_SCORE;
-                    if beta != MATE_SCORE {
-                        beta = (alpha + beta) / 2;
-                    }
-                } else if search_score >= beta {
-                    // Fail-high: expande beta
-                    beta = MATE_SCORE;
-                    if alpha != -MATE_SCORE {
-                        alpha = (alpha + beta) / 2;
-                    }
-                } else {
-                    // Score dentro da janela
-                    break;
-                }
-            }
-
-            if self.controller.should_stop() {
-                break;
-            }
-
-            // Atualiza melhor resultado
-            best_move = self.best_move;
-            best_score = search_score;
-            depth_completed = depth;
-
-            // Imprime informações UCI
-            let iteration_time = iteration_start.elapsed();
-            let nps = if iteration_time.as_secs_f64() > 0.0 {
-                (self.nodes_searched as f64 / iteration_time.as_secs_f64()) as u64
+        let moves = board.generate_legal_moves();
+        if moves.is_empty() {
+            return if board.is_king_in_check(board.to_move) {
+                -MATE_SCORE + self.thread_id as i16
             } else {
                 0
             };
+        }
 
-            println!("info depth {} score cp {} nodes {} nps {} time {} pv {}",
-                depth,
-                search_score,
-                self.nodes_searched,
-                nps,
-                iteration_time.as_millis(),
-                self.format_pv()
-            );
+        let mut ordered_moves = moves;
+        let tt_move = self.controller.tt.probe(board.zobrist_hash)
+            .map(|entry| entry.get_move());
+        
+        self.move_orderer.order_moves(board, &mut ordered_moves, tt_move, 0);
 
-            // Para busca antecipada se mate encontrado
-            if search_score.abs() > MATE_IN_MAX_PLY {
-                break;
+        let mut best_score = -MATE_SCORE - 1;
+        let mut best_move = ordered_moves[0];
+        let mut alpha = alpha;
+
+        for (move_index, &mv) in ordered_moves.iter().enumerate() {
+            let undo_info = board.make_move_with_undo(mv);
+            let previous_to_move = !board.to_move;
+            
+            if board.is_king_in_check(previous_to_move) {
+                board.unmake_move(mv, undo_info);
+                continue;
+            }
+
+            let score = if move_index == 0 || best_score == -MATE_SCORE - 1 {
+                -self.alpha_beta(board, -beta, -alpha, depth - 1, 1, true)
+            } else {
+                let score = -self.alpha_beta(board, -alpha - 1, -alpha, depth - 1, 1, false);
+                
+                if score > alpha && score < beta {
+                    -self.alpha_beta(board, -beta, -alpha, depth - 1, 1, true)
+                } else {
+                    score
+                }
+            };
+
+            board.unmake_move(mv, undo_info);
+
+            if self.controller.should_stop() {
+                return best_score;
+            }
+
+            if score > best_score {
+                best_score = score;
+                best_move = mv;
+                self.best_move = Some(mv);
+
+                if score > alpha {
+                    alpha = score;
+                    
+                    if score >= beta {
+                        self.move_orderer.update_history_cutoff(
+                            board, 
+                            mv, 
+                            depth, 
+                            &ordered_moves[..move_index]
+                        );
+                        break;
+                    }
+                }
             }
         }
 
-        let final_move = best_move.unwrap_or(root_moves[0]);
-        let stats = self.get_search_stats(start_time, depth_completed);
-        
-        (final_move, stats)
+        best_score
     }
 
 
-    /// Busca Alpha-Beta principal
     pub fn alpha_beta(
         &mut self,
         board: &mut Board,
@@ -187,7 +138,7 @@ impl AlphaBetaSearcher {
         ply: u16,
         is_pv_node: bool,
     ) -> i16 {
-        self.nodes_searched += 1;
+        self.nodes_searched.fetch_add(1, Ordering::Relaxed);
 
         // Verifica limites
         if self.controller.should_stop() || ply >= MAX_PLY {
@@ -208,33 +159,25 @@ impl AlphaBetaSearcher {
         beta = beta.min(mate_beta);
 
         // Probe da Transposition Table
-        let tt_move = if let Ok(tt) = self.controller.tt.lock() {
-            if let Some(tt_entry) = tt.probe(board.zobrist_hash) {
-                self.tt_hits += 1;
-                
-                if tt_entry.depth >= depth && !is_pv_node {
-                    let tt_score = adjust_mate_score(tt_entry.score, ply);
-                    match tt_entry.node_type {
-                        NodeType::Exact => return tt_score,
-                        NodeType::LowerBound => {
-                            if tt_score >= beta {
-                                return tt_score;
-                            }
+        let tt_move = if let Some(tt_entry) = self.controller.tt.probe(board.zobrist_hash) {
+            if tt_entry.get_depth() >= depth && !is_pv_node {
+                let tt_score = adjust_mate_score(tt_entry.get_score(), ply);
+                match tt_entry.get_type() {
+                    NodeType::Exact => return tt_score,
+                    NodeType::LowerBound => {
+                        if tt_score >= beta {
+                            return tt_score;
                         }
-                        NodeType::UpperBound => {
-                            if tt_score <= alpha {
-                                return tt_score;
-                            }
+                    }
+                    NodeType::UpperBound => {
+                        if tt_score <= alpha {
+                            return tt_score;
                         }
                     }
                 }
-                Some(tt_entry.best_move)
-            } else {
-                self.tt_misses += 1;
-                None
             }
+            Some(tt_entry.get_move())
         } else {
-            self.tt_misses += 1;
             None
         };
 
@@ -390,10 +333,10 @@ impl AlphaBetaSearcher {
                     if score >= beta {
                         // Beta cutoff
                         node_type = NodeType::LowerBound;
-                        self.beta_cutoffs += 1;
+                        self.beta_cutoffs.fetch_add(1, Ordering::Relaxed);
                         
                         if move_index == 0 {
-                            self.first_move_cutoffs += 1;
+                            self.first_move_cutoffs.fetch_add(1, Ordering::Relaxed);
                         }
                         
                         // Atualiza história
@@ -420,9 +363,7 @@ impl AlphaBetaSearcher {
 
         // Armazena na TT
         let tt_score = unadjust_mate_score(best_score, ply);
-        if let Ok(tt) = self.controller.tt.lock() {
-            tt.store(board.zobrist_hash, best_move, tt_score, depth, node_type);
-        }
+        self.controller.tt.store(board.zobrist_hash, best_move, tt_score, depth, node_type);
 
         best_score
     }
@@ -456,12 +397,10 @@ impl AlphaBetaSearcher {
         }
     }
 
-    fn clear_search_data(&mut self) {
-        self.nodes_searched = 0;
-        self.tt_hits = 0;
-        self.tt_misses = 0;
-        self.beta_cutoffs = 0;
-        self.first_move_cutoffs = 0;
+    pub fn clear_search_data(&mut self) {
+        self.nodes_searched.store(0, Ordering::Relaxed);
+        self.beta_cutoffs.store(0, Ordering::Relaxed);
+        self.first_move_cutoffs.store(0, Ordering::Relaxed);
         self.best_move = None;
         self.principal_variation.clear();
         self.killer_moves = [[None; 2]; MAX_PLY as usize];
@@ -483,21 +422,11 @@ impl AlphaBetaSearcher {
         }
     }
 
-    fn get_search_stats(&self, start_time: Instant, depth: u8) -> SearchStats {
-        let elapsed = start_time.elapsed();
-        let (qnodes,) = self.qsearcher.get_stats();
-        
-        SearchStats {
-            nodes_searched: self.nodes_searched + qnodes,
-            tt_hits: self.tt_hits,
-            tt_misses: self.tt_misses,
-            depth_reached: depth,
-            time_elapsed: elapsed,
-            nps: if elapsed.as_secs_f64() > 0.0 {
-                ((self.nodes_searched + qnodes) as f64 / elapsed.as_secs_f64()) as u64
-            } else {
-                0
-            },
-        }
+    pub fn get_nodes(&self) -> u64 {
+        self.nodes_searched.load(Ordering::Relaxed)
+    }
+    
+    pub fn get_best_move(&self) -> Option<Move> {
+        self.best_move
     }
 }

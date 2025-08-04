@@ -6,17 +6,17 @@ pub mod evaluation;
 pub mod move_ordering;
 pub mod quiescence;
 pub mod alpha_beta;
-pub mod search_thread;
+pub mod parallel_search;
 
 pub use transposition_table::*;
 pub use evaluation::*;
 pub use move_ordering::*;
 pub use quiescence::*;
 pub use alpha_beta::*;
-pub use search_thread::*;
+pub use parallel_search::*;
 
 use crate::core::*;
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::time::{Duration, Instant};
 
 /// Configuracao de busca
@@ -41,10 +41,9 @@ impl Default for SearchConfig {
     }
 }
 
-/// Controlador de busca para coordenar threads e comunicacao
 pub struct SearchController {
     pub config: SearchConfig,
-    pub tt: Arc<Mutex<TranspositionTable>>,
+    pub tt: Arc<TranspositionTable>,
     pub stop_flag: Arc<AtomicBool>,
     pub start_time: Instant,
 }
@@ -52,7 +51,7 @@ pub struct SearchController {
 impl SearchController {
     pub fn new(config: SearchConfig) -> Self {
         SearchController {
-            tt: Arc::new(Mutex::new(TranspositionTable::new(config.hash_size_mb))),
+            tt: Arc::new(TranspositionTable::new(config.hash_size_mb)),
             stop_flag: Arc::new(AtomicBool::new(false)),
             start_time: Instant::now(),
             config,
@@ -79,7 +78,6 @@ impl SearchController {
     }
 }
 
-/// Estatisticas de busca
 #[derive(Debug, Default, Clone)]
 pub struct SearchStats {
     pub nodes_searched: u64,
@@ -87,11 +85,9 @@ pub struct SearchStats {
     pub tt_misses: u64,
     pub depth_reached: u8,
     pub time_elapsed: Duration,
-    pub nps: u64, // Nodes per second
+    pub nps: u64,
 }
 
-/// Funcao principal de busca multi-threaded
 pub fn search(board: &mut Board, controller: Arc<SearchController>) -> (Move, SearchStats) {
-    let mut searcher = AlphaBetaSearcher::new(controller.clone());
-    searcher.iterative_deepening(board)
+    parallel_search(board, controller)
 }

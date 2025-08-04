@@ -53,9 +53,9 @@ impl QuiescenceSearcher {
         // Probe da tabela de transposi��o
         if let Some(tt_ref) = tt {
             if let Some(tt_entry) = tt_ref.probe(board.zobrist_hash) {
-                if tt_entry.depth >= depth as u8 {
-                    let tt_score = adjust_mate_score(tt_entry.score, ply);
-                    match tt_entry.node_type {
+                if tt_entry.get_depth() >= depth as u8 {
+                    let tt_score = adjust_mate_score(tt_entry.get_score(), ply);
+                    match tt_entry.get_type() {
                         NodeType::Exact => return tt_score,
                         NodeType::LowerBound => {
                             if tt_score >= beta {

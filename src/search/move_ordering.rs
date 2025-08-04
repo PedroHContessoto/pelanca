@@ -2,8 +2,6 @@
 // Cr�tico para efici�ncia do Alpha-Beta: bons movimentos primeiro = mais cortes
 
 use crate::core::*;
-use crate::search::transposition_table::*;
-use crate::utils::BitboardOps;
 
 /// Valores para ordenação de movimentos (maior = melhor)
 const MVV_LVA_SCORES: [[i16; 6]; 6] = [

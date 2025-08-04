@@ -3,7 +3,7 @@
 use pelanca::*;
 use pelanca::search::*;
 use std::io::{self, BufRead};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -64,9 +64,7 @@ impl UCIEngine {
 
         // Limpa TT se existir
         if let Some(ref controller) = self.search_controller {
-            if let Ok(mut tt) = controller.tt.lock() {
-                tt.clear();
-            }
+            controller.tt.clear();
         }
     }
 
