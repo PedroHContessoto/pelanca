@@ -200,7 +200,25 @@ impl QuiescenceSearcher {
             return board.is_square_attacked_by(mv.to, !board.to_move);
         }
         
+        // Para capturas mais pr�ximas em valor, usa SEE mais preciso
+        if attacker_value > victim_value {
+            return self.simple_see(board, mv) < 0;
+        }
+        
         false
+    }
+
+    /// Static Exchange Evaluation simplificado
+    fn simple_see(&self, board: &Board, mv: Move) -> i16 {
+        let mut value = if mv.is_en_passant { 100 } else { self.get_piece_value_at_square(board, mv.to) };
+        let attacker_value = self.get_piece_value_at_square(board, mv.from);
+        
+        // Simula se o oponente pode recapturar
+        if board.is_square_attacked_by(mv.to, !board.to_move) {
+            value -= attacker_value;
+        }
+        
+        value
     }
 
     /// Obt�m valor da pe�a em uma casa espec�fica

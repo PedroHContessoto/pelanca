@@ -262,11 +262,116 @@ impl Board {
         tactical_moves
     }
 
-    /// Verifica se um movimento dá xeque ao rei adversário
+    /// Gera movimentos que atacam uma casa específica (usado para SEE)
+    pub fn generate_attacks_to_square(&self, target_square: u8) -> Vec<Move> {
+        let mut attacks = Vec::with_capacity(16);
+        let target_bb = 1u64 << target_square;
+        let all_pieces = self.white_pieces | self.black_pieces;
+        let our_pieces = if self.to_move == Color::White { self.white_pieces } else { self.black_pieces };
+
+        // Peões que podem atacar a casa alvo
+        let pawn_attackers = moves::pawn::get_pawn_attackers(target_square, self.to_move);
+        let mut attacking_pawns = pawn_attackers & self.pawns & our_pieces;
+        while attacking_pawns != 0 {
+            let from_sq = attacking_pawns.trailing_zeros() as u8;
+            attacking_pawns &= attacking_pawns - 1;
+            
+            if target_square >= 56 || target_square <= 7 { // Promoção
+                for piece in [PieceKind::Queen, PieceKind::Rook, PieceKind::Bishop, PieceKind::Knight] {
+                    attacks.push(Move { from: from_sq, to: target_square, promotion: Some(piece), is_castling: false, is_en_passant: false });
+                }
+            } else {
+                attacks.push(Move { from: from_sq, to: target_square, promotion: None, is_castling: false, is_en_passant: false });
+            }
+        }
+
+        // Cavalos que podem atacar a casa alvo
+        let knight_attacks_to_target = moves::knight::get_knight_attacks(target_square);
+        let mut attacking_knights = knight_attacks_to_target & self.knights & our_pieces;
+        while attacking_knights != 0 {
+            let from_sq = attacking_knights.trailing_zeros() as u8;
+            attacking_knights &= attacking_knights - 1;
+            attacks.push(Move { from: from_sq, to: target_square, promotion: None, is_castling: false, is_en_passant: false });
+        }
+
+        // Bispos que podem atacar a casa alvo
+        let bishop_attacks_to_target = moves::magic_bitboards::get_bishop_attacks_magic(target_square, all_pieces);
+        let mut attacking_bishops = bishop_attacks_to_target & self.bishops & our_pieces;
+        while attacking_bishops != 0 {
+            let from_sq = attacking_bishops.trailing_zeros() as u8;
+            attacking_bishops &= attacking_bishops - 1;
+            attacks.push(Move { from: from_sq, to: target_square, promotion: None, is_castling: false, is_en_passant: false });
+        }
+
+        // Torres que podem atacar a casa alvo
+        let rook_attacks_to_target = moves::magic_bitboards::get_rook_attacks_magic(target_square, all_pieces);
+        let mut attacking_rooks = rook_attacks_to_target & self.rooks & our_pieces;
+        while attacking_rooks != 0 {
+            let from_sq = attacking_rooks.trailing_zeros() as u8;
+            attacking_rooks &= attacking_rooks - 1;
+            attacks.push(Move { from: from_sq, to: target_square, promotion: None, is_castling: false, is_en_passant: false });
+        }
+
+        // Rainhas que podem atacar a casa alvo
+        let queen_attacks_to_target = moves::queen::get_queen_attacks(target_square, all_pieces);
+        let mut attacking_queens = queen_attacks_to_target & self.queens & our_pieces;
+        while attacking_queens != 0 {
+            let from_sq = attacking_queens.trailing_zeros() as u8;
+            attacking_queens &= attacking_queens - 1;
+            attacks.push(Move { from: from_sq, to: target_square, promotion: None, is_castling: false, is_en_passant: false });
+        }
+
+        // Rei que pode atacar a casa alvo
+        let king_attacks_to_target = moves::king::get_king_attacks(target_square);
+        let attacking_king = king_attacks_to_target & self.kings & our_pieces;
+        if attacking_king != 0 {
+            let from_sq = attacking_king.trailing_zeros() as u8;
+            attacks.push(Move { from: from_sq, to: target_square, promotion: None, is_castling: false, is_en_passant: false });
+        }
+
+        attacks
+    }
+
+    /// Verifica se um movimento dá xeque ao rei adversário (otimizado com bitboards)
     fn gives_check(&self, mv: Move) -> bool {
+        let enemy_king_square = if self.to_move == Color::White {
+            (self.kings & self.black_pieces).trailing_zeros() as u8
+        } else {
+            (self.kings & self.white_pieces).trailing_zeros() as u8
+        };
+        
+        // Verifica se a peça movida atacará o rei na nova posição
+        let piece_kind = self.get_piece_at(mv.from).map(|p| p.kind);
+        if let Some(kind) = piece_kind {
+            let all_pieces_after = (self.white_pieces | self.black_pieces) ^ (1u64 << mv.from) | (1u64 << mv.to);
+            
+            let attacks_king = match kind {
+                PieceKind::Pawn => {
+                    moves::pawn::get_pawn_attacks(mv.to, self.to_move) & (1u64 << enemy_king_square) != 0
+                },
+                PieceKind::Knight => {
+                    moves::knight::get_knight_attacks(mv.to) & (1u64 << enemy_king_square) != 0
+                },
+                PieceKind::Bishop => {
+                    moves::magic_bitboards::get_bishop_attacks_magic(mv.to, all_pieces_after) & (1u64 << enemy_king_square) != 0
+                },
+                PieceKind::Rook => {
+                    moves::magic_bitboards::get_rook_attacks_magic(mv.to, all_pieces_after) & (1u64 << enemy_king_square) != 0
+                },
+                PieceKind::Queen => {
+                    moves::queen::get_queen_attacks(mv.to, all_pieces_after) & (1u64 << enemy_king_square) != 0
+                },
+                PieceKind::King => false, // Rei não pode dar xeque direto
+            };
+            
+            if attacks_king {
+                return true;
+            }
+        }
+        
+        // Verifica xeque descoberto (mais complexo, fallback para método original)
         let mut temp_board = *self;
         if temp_board.make_move(mv) {
-            // O movimento é legal, verifica se o rei adversário está em xeque
             temp_board.is_king_in_check(temp_board.to_move)
         } else {
             false
