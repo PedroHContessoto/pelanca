@@ -179,6 +179,100 @@ impl Board {
         moves
     }
 
+    /// Gera apenas movimentos "táticos": capturas, xeques, promoções
+    /// Usado principalmente na busca quiescence
+    pub fn generate_all_attacks(&self) -> Vec<Move> {
+        let mut tactical_moves = Vec::with_capacity(32);
+        let all_pieces = self.white_pieces | self.black_pieces;
+        let our_pieces = if self.to_move == Color::White { self.white_pieces } else { self.black_pieces };
+        let enemy_pieces = if self.to_move == Color::White { self.black_pieces } else { self.white_pieces };
+
+        // Capturas de peões (já implementado)
+        tactical_moves.extend(moves::pawn::generate_pawn_captures(self));
+
+        // Capturas de cavalos
+        let mut our_knights = self.knights & our_pieces;
+        while our_knights != 0 {
+            let from_sq = our_knights.trailing_zeros() as u8;
+            our_knights &= our_knights - 1;
+            
+            let mut captures = moves::knight::get_knight_attacks(from_sq) & enemy_pieces;
+            while captures != 0 {
+                let to_sq = captures.trailing_zeros() as u8;
+                captures &= captures - 1;
+                tactical_moves.push(Move { from: from_sq, to: to_sq, promotion: None, is_castling: false, is_en_passant: false });
+            }
+        }
+
+        // Capturas de bispos
+        let mut our_bishops = self.bishops & our_pieces;
+        while our_bishops != 0 {
+            let from_sq = our_bishops.trailing_zeros() as u8;
+            our_bishops &= our_bishops - 1;
+            
+            let mut captures = moves::magic_bitboards::get_bishop_attacks_magic(from_sq, all_pieces) & enemy_pieces;
+            while captures != 0 {
+                let to_sq = captures.trailing_zeros() as u8;
+                captures &= captures - 1;
+                tactical_moves.push(Move { from: from_sq, to: to_sq, promotion: None, is_castling: false, is_en_passant: false });
+            }
+        }
+
+        // Capturas de torres
+        let mut our_rooks = self.rooks & our_pieces;
+        while our_rooks != 0 {
+            let from_sq = our_rooks.trailing_zeros() as u8;
+            our_rooks &= our_rooks - 1;
+            
+            let mut captures = moves::magic_bitboards::get_rook_attacks_magic(from_sq, all_pieces) & enemy_pieces;
+            while captures != 0 {
+                let to_sq = captures.trailing_zeros() as u8;
+                captures &= captures - 1;
+                tactical_moves.push(Move { from: from_sq, to: to_sq, promotion: None, is_castling: false, is_en_passant: false });
+            }
+        }
+
+        // Capturas de rainhas
+        let mut our_queens = self.queens & our_pieces;
+        while our_queens != 0 {
+            let from_sq = our_queens.trailing_zeros() as u8;
+            our_queens &= our_queens - 1;
+            
+            let mut captures = moves::queen::get_queen_attacks(from_sq, all_pieces) & enemy_pieces;
+            while captures != 0 {
+                let to_sq = captures.trailing_zeros() as u8;
+                captures &= captures - 1;
+                tactical_moves.push(Move { from: from_sq, to: to_sq, promotion: None, is_castling: false, is_en_passant: false });
+            }
+        }
+
+        // Capturas do rei
+        let our_king = self.kings & our_pieces;
+        if our_king != 0 {
+            let from_sq = our_king.trailing_zeros() as u8;
+            
+            let mut captures = moves::king::get_king_attacks(from_sq) & enemy_pieces;
+            while captures != 0 {
+                let to_sq = captures.trailing_zeros() as u8;
+                captures &= captures - 1;
+                tactical_moves.push(Move { from: from_sq, to: to_sq, promotion: None, is_castling: false, is_en_passant: false });
+            }
+        }
+
+        tactical_moves
+    }
+
+    /// Verifica se um movimento dá xeque ao rei adversário
+    fn gives_check(&self, mv: Move) -> bool {
+        let mut temp_board = *self;
+        if temp_board.make_move(mv) {
+            // O movimento é legal, verifica se o rei adversário está em xeque
+            temp_board.is_king_in_check(temp_board.to_move)
+        } else {
+            false
+        }
+    }
+
     /// Executa um lance, atualizando o estado do tabuleiro.
     /// Retorna `true` se o lance é legal (não deixa o próprio rei em xeque).
     pub fn make_move(&mut self, mv: Move) -> bool {

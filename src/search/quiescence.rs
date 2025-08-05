@@ -165,35 +165,9 @@ impl QuiescenceSearcher {
 
     /// Gera apenas movimentos de captura e promo��es
     fn generate_captures(&self, board: &Board) -> Vec<Move> {
-        let all_moves = board.generate_all_moves();
-        
-        all_moves.into_iter()
-            .filter(|&mv| self.is_tactical_move(board, mv))
-            .collect()
+        board.generate_all_attacks()
     }
 
-    /// Verifica se movimento � t�tico (captura, promo��o, en passant)
-    fn is_tactical_move(&self, board: &Board, mv: Move) -> bool {
-        // Promo��es sempre s�o consideradas t�ticas
-        if mv.promotion.is_some() {
-            return true;
-        }
-        
-        // En passant � captura
-        if mv.is_en_passant {
-            return true;
-        }
-        
-        // Verifica se � captura normal
-        let to_bb = 1u64 << mv.to;
-        let enemy_pieces = if board.to_move == Color::White { 
-            board.black_pieces 
-        } else { 
-            board.white_pieces 
-        };
-        
-        (enemy_pieces & to_bb) != 0
-    }
 
     /// Estima valor aproximado da captura
     fn estimate_capture_value(&self, board: &Board, mv: Move) -> i16 {
