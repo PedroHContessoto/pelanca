@@ -27,6 +27,10 @@ pub struct SearchConfig {
     pub max_nodes: Option<u64>,
     pub threads: usize,
     pub hash_size_mb: usize,
+    pub aspiration_window: i16,
+    pub aspiration_min_depth: u8,
+    pub lazy_smp_depth_variations: Vec<(i8, i8)>, // (base_variation, random_range)
+    pub lazy_smp_alpha_beta_range: i16,
 }
 
 impl Default for SearchConfig {
@@ -37,6 +41,10 @@ impl Default for SearchConfig {
             max_nodes: None,
             threads: num_cpus::get(),
             hash_size_mb: 256,
+            aspiration_window: 50,
+            aspiration_min_depth: 5,
+            lazy_smp_depth_variations: vec![(-1, 2), (1, 2), (-2, 2), (0, 2)],
+            lazy_smp_alpha_beta_range: 15,
         }
     }
 }
