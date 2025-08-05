@@ -1,4 +1,4 @@
-# Pelanca Chess Engine v11.0
+# Pelanca Chess Engine v1.2
 
 Um motor de xadrez de alta performance escrito em Rust, com busca alpha-beta paralela e otimizações modernas.
 
