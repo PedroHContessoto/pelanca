@@ -164,16 +164,17 @@ impl Board {
         board
     }
 
-    /// Gera todos os lances pseudo-legais para todas as peças do jogador atual.
+    /// Gera todos os lances pseudo-legais para todas as peças do jogador atual (ULTRA-OTIMIZADO)
     pub fn generate_all_moves(&self) -> Vec<Move> {
         // Pre-aloca com capacidade otimizada para posições médias
         let mut moves = Vec::with_capacity(100);
 
-        moves.extend(moves::pawn::generate_pawn_moves(self));
-        moves.extend(moves::knight::generate_knight_moves(self));
+        // OTIMIZAÇÃO CRÍTICA: Eliminados TODOS os Vec::extend!
+        moves::pawn::generate_pawn_moves_into(self, &mut moves);
+        moves::knight::generate_knight_moves_into(self, &mut moves);
         self.generate_sliding_moves(&mut moves);
-        moves.extend(moves::queen::generate_queen_moves(self));
-        moves.extend(moves::king::generate_king_moves(self));
+        moves::queen::generate_queen_moves_into(self, &mut moves);
+        moves::king::generate_king_moves_into(self, &mut moves);
 
         moves
     }

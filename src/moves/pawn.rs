@@ -184,9 +184,9 @@ pub fn get_pawn_attackers(square: u8, attacking_color: Color) -> Bitboard {
     attackers
 }
 
-/// Gera todos os lances pseudo-legais para os peões do jogador atual.
-pub fn generate_pawn_moves(board: &Board) -> Vec<Move> {
-    let mut moves = Vec::with_capacity(16);
+/// Adiciona lances de peão diretamente ao Vec (OTIMIZADO - sem alocação extra)
+#[inline]
+pub fn generate_pawn_moves_into(board: &Board, moves: &mut Vec<Move>) {
     let all_pieces = board.white_pieces | board.black_pieces;
 
     if board.to_move == Color::White {
@@ -217,8 +217,8 @@ pub fn generate_pawn_moves(board: &Board) -> Vec<Move> {
             double_pushes &= double_pushes - 1;
         }
 
-        // Adiciona as capturas
-        moves.extend(generate_pawn_captures(board));
+        // Capturas integradas diretamente
+        generate_pawn_captures_into(board, moves);
 
     } else { // Lances das Pretas
         let our_pawns = board.pawns & board.black_pieces;
@@ -248,11 +248,128 @@ pub fn generate_pawn_moves(board: &Board) -> Vec<Move> {
             double_pushes &= double_pushes - 1;
         }
 
-        // Adiciona as capturas
-        moves.extend(generate_pawn_captures(board));
+        // Capturas integradas diretamente
+        generate_pawn_captures_into(board, moves);
     }
-    moves
 }
+
+/// Função auxiliar para capturas de peão diretamente no Vec
+#[inline]
+fn generate_pawn_captures_into(board: &Board, moves: &mut Vec<Move>) {
+    if board.to_move == Color::White {
+        let our_pawns = board.pawns & board.white_pieces;
+
+        // Capturas para a direita
+        let mut captures_right = ((our_pawns & NOT_H_FILE) << 9) & board.black_pieces;
+        while captures_right != 0 {
+            let to_sq = captures_right.trailing_zeros() as u8;
+            let from_sq = to_sq - 9;
+            if to_sq >= 56 { // Promoção
+                for piece in [PieceKind::Queen, PieceKind::Rook, PieceKind::Bishop, PieceKind::Knight] {
+                    moves.push(Move { from: from_sq, to: to_sq, promotion: Some(piece), is_castling: false, is_en_passant: false });
+                }
+            } else {
+                moves.push(Move { from: from_sq, to: to_sq, promotion: None, is_castling: false, is_en_passant: false });
+            }
+            captures_right &= captures_right - 1;
+        }
+
+        // Capturas para a esquerda
+        let mut captures_left = ((our_pawns & NOT_A_FILE) << 7) & board.black_pieces;
+        while captures_left != 0 {
+            let to_sq = captures_left.trailing_zeros() as u8;
+            let from_sq = to_sq - 7;
+            if to_sq >= 56 { // Promoção
+                for piece in [PieceKind::Queen, PieceKind::Rook, PieceKind::Bishop, PieceKind::Knight] {
+                    moves.push(Move { from: from_sq, to: to_sq, promotion: Some(piece), is_castling: false, is_en_passant: false });
+                }
+            } else {
+                moves.push(Move { from: from_sq, to: to_sq, promotion: None, is_castling: false, is_en_passant: false });
+            }
+            captures_left &= captures_left - 1;
+        }
+
+        // En passant para brancas
+        if let Some(ep_target) = board.en_passant_target {
+            let ep_rank = ep_target / 8;
+            if ep_rank == 5 {
+                if ep_target % 8 > 0 {
+                    let from_sq = ep_target - 9;
+                    if from_sq / 8 == 4 {
+                        if (our_pawns & (1u64 << from_sq)) != 0 {
+                            moves.push(Move { from: from_sq, to: ep_target, promotion: None, is_castling: false, is_en_passant: true });
+                        }
+                    }
+                }
+                if ep_target % 8 < 7 {
+                    let from_sq = ep_target - 7;
+                    if from_sq / 8 == 4 {
+                        if (our_pawns & (1u64 << from_sq)) != 0 {
+                            moves.push(Move { from: from_sq, to: ep_target, promotion: None, is_castling: false, is_en_passant: true });
+                        }
+                    }
+                }
+            }
+        }
+
+    } else { // Lances das Pretas
+        let our_pawns = board.pawns & board.black_pieces;
+
+        // Capturas para a direita
+        let mut captures_right = ((our_pawns & NOT_H_FILE) >> 7) & board.white_pieces;
+        while captures_right != 0 {
+            let to_sq = captures_right.trailing_zeros() as u8;
+            let from_sq = to_sq + 7;
+            if to_sq <= 7 { // Promoção
+                for piece in [PieceKind::Queen, PieceKind::Rook, PieceKind::Bishop, PieceKind::Knight] {
+                    moves.push(Move { from: from_sq, to: to_sq, promotion: Some(piece), is_castling: false, is_en_passant: false });
+                }
+            } else {
+                moves.push(Move { from: from_sq, to: to_sq, promotion: None, is_castling: false, is_en_passant: false });
+            }
+            captures_right &= captures_right - 1;
+        }
+
+        // Capturas para a esquerda
+        let mut captures_left = ((our_pawns & NOT_A_FILE) >> 9) & board.white_pieces;
+        while captures_left != 0 {
+            let to_sq = captures_left.trailing_zeros() as u8;
+            let from_sq = to_sq + 9;
+            if to_sq <= 7 { // Promoção
+                for piece in [PieceKind::Queen, PieceKind::Rook, PieceKind::Bishop, PieceKind::Knight] {
+                    moves.push(Move { from: from_sq, to: to_sq, promotion: Some(piece), is_castling: false, is_en_passant: false });
+                }
+            } else {
+                moves.push(Move { from: from_sq, to: to_sq, promotion: None, is_castling: false, is_en_passant: false });
+            }
+            captures_left &= captures_left - 1;
+        }
+
+        // En passant para pretas
+        if let Some(ep_target) = board.en_passant_target {
+            let ep_rank = ep_target / 8;
+            if ep_rank == 2 {
+                if ep_target % 8 > 0 {
+                    let from_sq = ep_target + 7;
+                    if from_sq / 8 == 3 {
+                        if (our_pawns & (1u64 << from_sq)) != 0 {
+                            moves.push(Move { from: from_sq, to: ep_target, promotion: None, is_castling: false, is_en_passant: true });
+                        }
+                    }
+                }
+                if ep_target % 8 < 7 {
+                    let from_sq = ep_target + 9;
+                    if from_sq / 8 == 3 {
+                        if (our_pawns & (1u64 << from_sq)) != 0 {
+                            moves.push(Move { from: from_sq, to: ep_target, promotion: None, is_castling: false, is_en_passant: true });
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 
 // =======================================================
 // NOVA FUNÇÃO OTIMIZADA PARA A BUSCA DE QUIESCÊNCIA
