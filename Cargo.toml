@@ -6,11 +6,11 @@ authors = ["Pedro Contessoto"]
 description = "High-performance chess engine written in Rust"
 
 [[bin]]
-name = "pelanca_v3"
+name = "pelanca_v4"
 path = "src/main.rs"
 
 [[bin]]
-name = "pelanca_uci_v3"
+name = "pelanca_uci_v4"
 path = "src/bin/uci.rs"
 
 [dependencies]
