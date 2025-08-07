@@ -22,8 +22,8 @@ pub struct MagicBitboard {
 static BISHOP_ATTACKS: OnceLock<Vec<Bitboard>> = OnceLock::new();
 static ROOK_ATTACKS: OnceLock<Vec<Bitboard>> = OnceLock::new();
 
-// Números mágicos verificados, definidos fora do lazy_static para clareza.
-pub const  ROOK_MAGICS: [u64; 64] = [
+// Números mágicos verificados (ORIGINAIS - NÃO ALTERAR!)
+const ROOK_MAGICS: [u64; 64] = [
     0x0680024001108022, 0x0880108040042000, 0x0100181100402003, 0x0100050060b00088,
     0x0200082011040600, 0x0100060864002100, 0x1480020001000180, 0x0180008002506900,
     0x0003800020804000, 0x0002401000402000, 0x2240805000200084, 0x8409001000200900,
@@ -42,7 +42,7 @@ pub const  ROOK_MAGICS: [u64; 64] = [
     0x2002001084208812, 0x000500180a840001, 0x00880810022300a4, 0x8040040116408022
 ];
 
-pub const  BISHOP_MAGICS: [u64; 64] = [
+const BISHOP_MAGICS: [u64; 64] = [
     0x0040040844404084, 0x002004208a004208, 0x8068180700200100, 0x0082408100004000,
     0x0001104020083980, 0x1082080444000400, 0x2000a29a09401400, 0x0802010400928820,
     0x800840032a060a00, 0xa0000421084a0080, 0x0000100186004ca0, 0x090002208a000000,
@@ -60,7 +60,6 @@ pub const  BISHOP_MAGICS: [u64; 64] = [
     0x0c69008450021080, 0x0000528084100204, 0x0040060100511000, 0x28020400c0840408,
     0x0100008104a08200, 0x0000004010020482, 0x1020400408218108, 0x2004101009010053
 ];
-
 
 /// Shift values para torres (quantos bits deslocar)
 const ROOK_SHIFTS: [u8; 64] = [
@@ -168,155 +167,54 @@ const fn generate_bishop_mask(square: u8) -> Bitboard {
 
 /// Calcula ataques de torre com ocupação específica
 fn calculate_rook_attacks(square: u8, occupancy: Bitboard) -> Bitboard {
-    #[cfg(target_arch = "aarch64")]
-    {
-        // Otimização vetorial com NEON: Processa múltiplas direções simultaneamente
-        // Nota: Esta é uma implementação simplificada; ajuste para precisão total se necessário
-        let mut result = 0u64;
-        let rank = square / 8;
-        let file = square % 8;
+    let mut result = 0u64;
+    let rank = square as i32 / 8;
+    let file = square as i32 % 8;
+    let directions = [(0, 1), (0, -1), (1, 0), (-1, 0)];
 
-        // Máscaras vetoriais para direções horizontais e verticais
-        unsafe {
-            // Exemplo para horizontal (rank fixa)
-            let horiz_mask = vdupq_n_u64(0xFFu64 << (rank * 8));
-            let horiz_occ = vdupq_n_u64(occupancy & horiz_mask as u64);
-            // Use vcntq_u8 ou bitwise para detectar blockers (implementação vetorial de ray tracing)
-            // Para simplificação, fallback para loops em direções individuais, mas vetorize onde possível
-            // ... (lógica adicional para colisões vetoriais)
-
-            // Processamento vertical similar
-            let vert_mask = vdupq_n_u64(0x0101010101010101u64 << file);
-            let vert_occ = vdupq_n_u64(occupancy & vert_mask as u64);
-            // ... (computar ataques vetoriais)
-        }
-
-        // Fallback para loops precisos em cada direção (garante correção)
-        let directions = [(0, 1i32), (0, -1i32), (1i32, 0i32), (-1i32, 0i32)];
-        let rank_i32 = rank as i32;
-        let file_i32 = file as i32;
-
-        for (dr, df) in directions {
-            let mut r = rank_i32 + dr;
-            let mut f = file_i32 + df;
-            while r >= 0 && r < 8 && f >= 0 && f < 8 {
-                let target = (r * 8 + f) as u8;
-                let target_bb = 1u64 << target;
-                result |= target_bb;
-                if (occupancy & target_bb) != 0 {
-                    break;
-                }
-                r += dr;
-                f += df;
+    for (dr, df) in directions {
+        let mut r = rank + dr;
+        let mut f = file + df;
+        while r >= 0 && r < 8 && f >= 0 && f < 8 {
+            let target = (r * 8 + f) as u8;
+            let target_bb = 1u64 << target;
+            result |= target_bb;
+            if (occupancy & target_bb) != 0 {
+                break;
             }
+            r += dr;
+            f += df;
         }
-        result
     }
-
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        // Implementação original (fallback para arquiteturas sem suporte vetorial específico)
-        let mut result = 0u64;
-        let rank = square as i32 / 8;
-        let file = square as i32 % 8;
-        let directions = [(0, 1), (0, -1), (1, 0), (-1, 0)];
-
-        for (dr, df) in directions {
-            let mut r = rank + dr;
-            let mut f = file + df;
-            while r >= 0 && r < 8 && f >= 0 && f < 8 {
-                let target = (r * 8 + f) as u8;
-                let target_bb = 1u64 << target;
-                result |= target_bb;
-                if (occupancy & target_bb) != 0 {
-                    break;
-                }
-                r += dr;
-                f += df;
-            }
-        }
-        result
-    }
+    result
 }
 
 /// Calcula ataques de bispo com ocupação específica
 fn calculate_bishop_attacks(square: u8, occupancy: Bitboard) -> Bitboard {
-    #[cfg(target_arch = "aarch64")]
-    {
-        // Otimização vetorial com NEON: Processa múltiplas diagonais simultaneamente
-        // Esta é uma estrutura base; lógica de vetorização real precisará de vetores múltiplos
-        let mut result = 0u64;
-        let rank = square / 8;
-        let file = square % 8;
+    let mut result = 0u64;
+    let rank = square as i32 / 8;
+    let file = square as i32 % 8;
+    let directions = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
 
-        unsafe {
-            // Máscara aproximada para diagonais (exemplo genérico)
-            // A vetorização real exige lógica customizada por direção
-            // Exemplo simplificado com fallback embutido
-            let diag_mask1 = vdupq_n_u64(0x8040201008040201u64); // Anti-diagonal
-            let diag_mask2 = vdupq_n_u64(0x0102040810204080u64); // Diagonal principal
+    for (dr, df) in directions {
+        let mut r = rank + dr;
+        let mut f = file + df;
 
-            let diag_occ1 = vdupq_n_u64(occupancy & 0x8040201008040201u64);
-            let diag_occ2 = vdupq_n_u64(occupancy & 0x0102040810204080u64);
+        while r >= 0 && r < 8 && f >= 0 && f < 8 {
+            let target = (r * 8 + f) as u8;
+            let target_bb = 1u64 << target;
+            result |= target_bb;
 
-            // Aqui você precisaria aplicar técnicas como bitwise ANDs com shifting vetorial (vshlq/vshrq)
-            // ou simular o "ray tracing" com SIMD. Por ora, consideramos apenas o fallback.
-        }
-
-        // Fallback preciso em cada uma das 4 diagonais
-        let directions = [(1i32, 1i32), (1i32, -1i32), (-1i32, 1i32), (-1i32, -1i32)];
-        let rank_i32 = rank as i32;
-        let file_i32 = file as i32;
-
-        for (dr, df) in directions {
-            let mut r = rank_i32 + dr;
-            let mut f = file_i32 + df;
-
-            while r >= 0 && r < 8 && f >= 0 && f < 8 {
-                let target = (r * 8 + f) as u8;
-                let target_bb = 1u64 << target;
-                result |= target_bb;
-
-                if (occupancy & target_bb) != 0 {
-                    break;
-                }
-
-                r += dr;
-                f += df;
+            if (occupancy & target_bb) != 0 {
+                break;
             }
-        }
 
-        result
+            r += dr;
+            f += df;
+        }
     }
 
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        // Implementação padrão (não-SIMD)
-        let mut result = 0u64;
-        let rank = square as i32 / 8;
-        let file = square as i32 % 8;
-        let directions = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
-
-        for (dr, df) in directions {
-            let mut r = rank + dr;
-            let mut f = file + df;
-
-            while r >= 0 && r < 8 && f >= 0 && f < 8 {
-                let target = (r * 8 + f) as u8;
-                let target_bb = 1u64 << target;
-                result |= target_bb;
-
-                if (occupancy & target_bb) != 0 {
-                    break;
-                }
-
-                r += dr;
-                f += df;
-            }
-        }
-
-        result
-    }
+    result
 }
 
 // ============================================================================
