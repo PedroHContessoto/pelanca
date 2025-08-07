@@ -171,8 +171,7 @@ impl Board {
 
         moves.extend(moves::pawn::generate_pawn_moves(self));
         moves.extend(moves::knight::generate_knight_moves(self));
-        moves.extend(moves::sliding::generate_sliding_moves(self, PieceKind::Bishop));
-        moves.extend(moves::sliding::generate_sliding_moves(self, PieceKind::Rook));
+        self.generate_sliding_moves(&mut moves);
         moves.extend(moves::queen::generate_queen_moves(self));
         moves.extend(moves::king::generate_king_moves(self));
 
@@ -878,6 +877,57 @@ impl Board {
             (Some(PieceKind::King), mv.to)
         } else {
             (None, mv.to)
+        }
+    }
+
+    /// Gera movimentos de peças deslizantes usando magic bitboards diretamente (OTIMIZADO)
+    #[inline(always)]
+    fn generate_sliding_moves(&self, moves: &mut Vec<Move>) {
+        let our_pieces = if self.to_move == Color::White { self.white_pieces } else { self.black_pieces };
+        let all_pieces = self.white_pieces | self.black_pieces;
+        
+        // Gerar movimentos de bispos
+        let mut our_bishops = self.bishops & our_pieces;
+        while our_bishops != 0 {
+            let from_sq = our_bishops.trailing_zeros() as u8;
+            let attacks = crate::moves::magic_bitboards::get_bishop_attacks_magic(from_sq, all_pieces);
+            let mut valid_moves = attacks & !our_pieces;
+            
+            while valid_moves != 0 {
+                let to_sq = valid_moves.trailing_zeros() as u8;
+                moves.push(Move { 
+                    from: from_sq, 
+                    to: to_sq, 
+                    promotion: None, 
+                    is_castling: false, 
+                    is_en_passant: false 
+                });
+                valid_moves &= valid_moves - 1;
+            }
+            
+            our_bishops &= our_bishops - 1;
+        }
+        
+        // Gerar movimentos de torres
+        let mut our_rooks = self.rooks & our_pieces;
+        while our_rooks != 0 {
+            let from_sq = our_rooks.trailing_zeros() as u8;
+            let attacks = crate::moves::magic_bitboards::get_rook_attacks_magic(from_sq, all_pieces);
+            let mut valid_moves = attacks & !our_pieces;
+            
+            while valid_moves != 0 {
+                let to_sq = valid_moves.trailing_zeros() as u8;
+                moves.push(Move { 
+                    from: from_sq, 
+                    to: to_sq, 
+                    promotion: None, 
+                    is_castling: false, 
+                    is_en_passant: false 
+                });
+                valid_moves &= valid_moves - 1;
+            }
+            
+            our_rooks &= our_rooks - 1;
         }
     }
 }
