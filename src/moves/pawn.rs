@@ -173,10 +173,10 @@ pub fn get_pawn_attackers(square: u8, attacking_color: Color) -> Bitboard {
         }
         Color::Black => {
             // Peões pretos atacam diagonalmente para baixo
-            if square % 8 != 0 && square <= 54 {
+            if square % 8 != 0 && square <= 55 {
                 attackers |= 1u64 << (square + 7); // Ataque da esquerda (visão preta)
             }
-            if square % 8 != 7 && square <= 56 {
+            if square % 8 != 7 && square <= 54 {
                 attackers |= 1u64 << (square + 9); // Ataque da direita
             }
         }

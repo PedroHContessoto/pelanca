@@ -87,7 +87,9 @@ impl Board {
                     sq += 1;
                 }
             }
-            sq -= 16; // Next rank down
+            if sq >= 16 {
+                sq -= 16; // Next rank down
+            }
         }
 
         // To move (parts[1])
@@ -929,6 +931,90 @@ impl Board {
             }
             
             our_rooks &= our_rooks - 1;
+        }
+    }
+    
+    /// Converte o tabuleiro para string FEN (versão simplificada)
+    pub fn to_fen_string(&self) -> String {
+        let mut fen = String::new();
+        
+        // Board position
+        for rank in (0..8).rev() {
+            let mut empty_count = 0;
+            
+            for file in 0..8 {
+                let square = rank * 8 + file;
+                let piece_char = self.piece_at_square_char(square);
+                
+                if let Some(c) = piece_char {
+                    if empty_count > 0 {
+                        fen.push_str(&empty_count.to_string());
+                        empty_count = 0;
+                    }
+                    fen.push(c);
+                } else {
+                    empty_count += 1;
+                }
+            }
+            
+            if empty_count > 0 {
+                fen.push_str(&empty_count.to_string());
+            }
+            
+            if rank > 0 {
+                fen.push('/');
+            }
+        }
+        
+        // Active color
+        fen.push(' ');
+        fen.push(if self.to_move == Color::White { 'w' } else { 'b' });
+        
+        // Castling rights
+        fen.push(' ');
+        let mut castling = String::new();
+        if self.castling_rights & 1 != 0 { castling.push('K'); }
+        if self.castling_rights & 2 != 0 { castling.push('Q'); }
+        if self.castling_rights & 4 != 0 { castling.push('k'); }
+        if self.castling_rights & 8 != 0 { castling.push('q'); }
+        if castling.is_empty() { castling.push('-'); }
+        fen.push_str(&castling);
+        
+        // En passant
+        fen.push(' ');
+        if let Some(ep_square) = self.en_passant_target {
+            let file = (ep_square % 8) as u8 + b'a';
+            let rank = (ep_square / 8) as u8 + b'1';
+            fen.push(file as char);
+            fen.push(rank as char);
+        } else {
+            fen.push('-');
+        }
+        
+        // Halfmove and fullmove clocks
+        fen.push_str(&format!(" {} 1", self.halfmove_clock));
+        
+        fen
+    }
+    
+    /// Retorna o caractere da peça numa casa específica
+    fn piece_at_square_char(&self, square: u8) -> Option<char> {
+        let bit = 1u64 << square;
+        
+        if self.pawns & bit != 0 {
+            Some(if self.white_pieces & bit != 0 { 'P' } else { 'p' })
+        } else if self.knights & bit != 0 {
+            Some(if self.white_pieces & bit != 0 { 'N' } else { 'n' })
+        } else if self.bishops & bit != 0 {
+            Some(if self.white_pieces & bit != 0 { 'B' } else { 'b' })
+        } else if self.rooks & bit != 0 {
+            Some(if self.white_pieces & bit != 0 { 'R' } else { 'r' })
+        } else if self.queens & bit != 0 {
+            Some(if self.white_pieces & bit != 0 { 'Q' } else { 'q' })
+        } else if self.kings & bit != 0 {
+            Some(if self.white_pieces & bit != 0 { 'K' } else { 'k' })
+        } else {
+            None
         }
     }
 }
