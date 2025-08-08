@@ -57,33 +57,37 @@ impl TrainingDataGenerator {
     pub fn generate_training_data(&self, total_positions: usize) -> Vec<TrainingPosition> {
         let cores = rayon::current_num_threads();
         let games_needed = (total_positions / self.positions_per_game).max(1);
+        let games_per_core = (games_needed / cores).max(1);
         
         println!("Gerando {} posições em {} jogos usando {} cores", 
                 total_positions, games_needed, cores);
-        
-        // Gera jogos sequencialmente para evitar múltiplas instâncias do Stockfish
-        let mut all_positions = Vec::new();
-        let mut rng = StdRng::seed_from_u64(12345);
-        
-        for game_id in 0..games_needed {
-            if game_id % 10 == 0 {
-                println!("Progresso: jogo {}/{}", game_id, games_needed);
-            }
-            
-            let game_positions = self.play_training_game(&mut rng);
-            all_positions.extend(game_positions);
-            
-            // Para se já temos posições suficientes
-            if all_positions.len() >= total_positions {
-                break;
-            }
-        }
-        
+
+        let all_positions: Vec<Vec<TrainingPosition>> = (0..cores)
+            .into_par_iter()
+            .map(|core_id| {
+                let seed = 12345 + core_id as u64;
+                let mut rng = StdRng::seed_from_u64(seed);
+                let mut positions = Vec::new();
+
+                for game_id in 0..games_per_core {
+                    if game_id % 50 == 0 {
+                        println!("Core {}: jogo {}/{}", core_id, game_id, games_per_core);
+                    }
+
+                    let game_positions = self.play_training_game(&mut rng);
+                    positions.extend(game_positions);
+                }
+
+                positions
+            })
+            .collect();
+
         // Limita ao número desejado de posições
-        all_positions.truncate(total_positions);
+        let mut final_positions: Vec<TrainingPosition> = all_positions.into_iter().flatten().collect();
+        final_positions.truncate(total_positions);
         
-        println!("Geradas {} posições de treinamento", all_positions.len());
-        all_positions
+        println!("Geradas {} posições de treinamento", final_positions.len());
+        final_positions
     }
     
     /// Joga um jogo usando Stockfish como oponente para dados de alta qualidade
