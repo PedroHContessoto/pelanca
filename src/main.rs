@@ -111,7 +111,7 @@ fn is_valid_move(board: &Board, mv: &Move) -> bool {
 fn perft_test_parallel(fen: &str, max_depth: u8) {
     match Board::from_fen(fen) {
         Ok(mut board) => {
-            let available_cores = num_cpus::get().saturating_sub(1);
+            let available_cores = num_cpus::get();
             println!("FEN: {}", fen);
             println!("Jogador: {:?}\n", board.to_move);
             println!("Cores disponíveis: {}\n", available_cores);
