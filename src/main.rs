@@ -6,7 +6,7 @@
 
 use pelanca::*;
 use pelanca::engine::perft::perft_parallel;
-use pelanca::engine::eval::MaterialEvaluator;
+use pelanca::engine::eval::PstEvaluator;
 use pelanca::engine::search::NegamaxSearcher;
 use pelanca::engine::{Searcher, SearchConfig};
 use std::time::Instant;
@@ -46,7 +46,7 @@ fn run_bench() {
     // Busca
     println!("\n--- Negamax Alpha-Beta (Iterative Deepening) ---");
     let board = Board::new();
-    let eval = MaterialEvaluator;
+    let eval = PstEvaluator;
     let mut searcher = NegamaxSearcher::new(eval);
 
     let config = SearchConfig { max_depth: 6, ..Default::default() };

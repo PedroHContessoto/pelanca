@@ -7,20 +7,20 @@ use std::io::{self, BufRead};
 use std::sync::atomic::Ordering;
 use crate::core::board::Board;
 use crate::engine::traits::*;
-use crate::engine::eval::MaterialEvaluator;
+use crate::engine::eval::PstEvaluator;
 use crate::engine::search::NegamaxSearcher;
 
 /// Motor UCI que mantém estado e comunica via stdin/stdout.
 struct UciEngine {
     board: Board,
-    searcher: NegamaxSearcher<MaterialEvaluator>,
+    searcher: NegamaxSearcher<PstEvaluator>,
 }
 
 impl UciEngine {
     fn new() -> Self {
         UciEngine {
             board: Board::new(),
-            searcher: NegamaxSearcher::new(MaterialEvaluator),
+            searcher: NegamaxSearcher::new(PstEvaluator),
         }
     }
 
