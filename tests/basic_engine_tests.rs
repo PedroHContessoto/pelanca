@@ -35,3 +35,22 @@ fn from_fen_rejects_rows_with_invalid_square_count() {
     let invalid = Board::from_fen("8/8/8/8/8/8/8/9 w - - 0 1");
     assert!(invalid.is_err(), "FEN rows with more than 8 squares must be rejected");
 }
+
+
+#[test]
+fn search_respects_nodes_limit() {
+    use pelanca::engine::eval::PstEvaluator;
+    use pelanca::engine::search::NegamaxSearcher;
+    use pelanca::engine::{Searcher, SearchConfig};
+
+    let board = Board::new();
+    let mut searcher = NegamaxSearcher::new(PstEvaluator);
+    let config = SearchConfig {
+        max_depth: 8,
+        nodes_limit: Some(1_000),
+        ..Default::default()
+    };
+
+    let result = searcher.search(&board, &config);
+    assert!(result.nodes_searched <= 3_000, "search should stop around nodes limit");
+}
