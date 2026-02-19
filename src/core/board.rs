@@ -61,10 +61,13 @@ impl Board {
         }
 
         let mut sq = 56; // Start from a8 (rank 8)
-        for row in rows {
+        for (row_idx, row) in rows.iter().enumerate() {
+            let mut row_square_count: u8 = 0;
             for ch in row.chars() {
                 if let Some(digit) = ch.to_digit(10) {
-                    sq += digit as u8; // Skip empty squares
+                    let skip = digit as u8;
+                    row_square_count += skip;
+                    sq += skip; // Skip empty squares
                 } else {
                     let bb = 1u64 << sq;
                     let is_white = ch.is_uppercase();
@@ -83,10 +86,19 @@ impl Board {
                     } else {
                         board.black_pieces |= bb;
                     }
+                    row_square_count += 1;
                     sq += 1;
                 }
             }
-            sq -= 16; // Next rank down
+
+            if row_square_count != 8 {
+                return Err("Invalid FEN: Row does not contain 8 squares".to_string());
+            }
+
+            // Next rank down (avoid underflow after processing last rank)
+            if row_idx < 7 {
+                sq -= 16;
+            }
         }
 
         // To move (parts[1])
