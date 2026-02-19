@@ -35,6 +35,7 @@ pub struct NegamaxSearcher<E: Evaluator> {
     stop: Arc<AtomicBool>,
     start_time: Instant,
     time_limit_ms: u64,
+    nodes_limit: Option<u64>,
     tt: TranspositionTable,
     killer_moves: [[Option<Move>; 2]; MAX_PLY],
     history: [[i32; 64]; 64],
@@ -53,6 +54,7 @@ impl<E: Evaluator> NegamaxSearcher<E> {
             stop: Arc::new(AtomicBool::new(false)),
             start_time: Instant::now(),
             time_limit_ms: u64::MAX,
+            nodes_limit: None,
             tt: TranspositionTable::new(16),
             killer_moves: [[None; 2]; MAX_PLY],
             history: [[0i32; 64]; 64],
@@ -78,6 +80,11 @@ impl<E: Evaluator> NegamaxSearcher<E> {
         }
         if self.stop.load(Ordering::Relaxed) {
             return true;
+        }
+        if let Some(limit) = self.nodes_limit {
+            if self.nodes_searched >= limit {
+                return true;
+            }
         }
         self.start_time.elapsed().as_millis() as u64 >= self.time_limit_ms
     }
@@ -599,6 +606,7 @@ impl<E: Evaluator> Searcher for NegamaxSearcher<E> {
         self.start_time = Instant::now();
         self.stop.store(false, Ordering::Relaxed);
         self.time_limit_ms = self.calculate_time(config, board.to_move);
+        self.nodes_limit = config.nodes_limit;
         self.tt.new_search();
         self.clear_move_ordering();
         // Initialize repetition stack from game history

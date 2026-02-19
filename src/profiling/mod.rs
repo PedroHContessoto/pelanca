@@ -74,7 +74,7 @@ impl PerformanceProfiler {
     }
 
     /// Inicia timer para uma função/operação
-    pub fn start_timer(&self, name: &str) -> TimerHandle {
+    pub fn start_timer(&self, name: &str) -> TimerHandle<'_> {
         TimerHandle {
             name: if self.enabled { name.to_string() } else { String::new() },
             start: Instant::now(),
@@ -227,10 +227,10 @@ macro_rules! profile {
 #[macro_export]
 macro_rules! count {
     ($name:expr) => {
-        $crate::profiling::PROFILER.increment_counter($name);
+        $crate::profiling::get_profiler().increment_counter($name);
     };
     ($name:expr, $value:expr) => {
-        $crate::profiling::PROFILER.add_to_counter($name, $value);
+        $crate::profiling::get_profiler().add_to_counter($name, $value);
     };
 }
 
