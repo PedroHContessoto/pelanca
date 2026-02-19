@@ -40,6 +40,86 @@ impl Board {
         !temp.is_king_in_check(self.to_move)
     }
 
+    /// Gera apenas capturas pseudo-legais (para quiescence search).
+    pub fn generate_capture_moves(&self) -> Vec<Move> {
+        let mut moves = Vec::with_capacity(32);
+        let our_pieces = if self.to_move == Color::White { self.white_pieces } else { self.black_pieces };
+        let enemy_pieces = if self.to_move == Color::White { self.black_pieces } else { self.white_pieces };
+        let all_pieces = self.white_pieces | self.black_pieces;
+
+        // Pawn captures (reusa a função existente)
+        moves.extend(moves::pawn::generate_pawn_captures(self));
+
+        // Knight captures
+        let mut our_knights = self.knights & our_pieces;
+        while our_knights != 0 {
+            let from_sq = our_knights.trailing_zeros() as u8;
+            our_knights &= our_knights - 1;
+            let mut captures = moves::knight::get_knight_attacks(from_sq) & enemy_pieces;
+            while captures != 0 {
+                let to_sq = captures.trailing_zeros() as u8;
+                captures &= captures - 1;
+                moves.push(Move { from: from_sq, to: to_sq, promotion: None, is_castling: false, is_en_passant: false });
+            }
+        }
+
+        // Bishop captures
+        let mut our_bishops = self.bishops & our_pieces;
+        while our_bishops != 0 {
+            let from_sq = our_bishops.trailing_zeros() as u8;
+            our_bishops &= our_bishops - 1;
+            let attacks = crate::moves::magic_bitboards::get_bishop_attacks_magic(from_sq, all_pieces);
+            let mut captures = attacks & enemy_pieces;
+            while captures != 0 {
+                let to_sq = captures.trailing_zeros() as u8;
+                captures &= captures - 1;
+                moves.push(Move { from: from_sq, to: to_sq, promotion: None, is_castling: false, is_en_passant: false });
+            }
+        }
+
+        // Rook captures
+        let mut our_rooks = self.rooks & our_pieces;
+        while our_rooks != 0 {
+            let from_sq = our_rooks.trailing_zeros() as u8;
+            our_rooks &= our_rooks - 1;
+            let attacks = crate::moves::magic_bitboards::get_rook_attacks_magic(from_sq, all_pieces);
+            let mut captures = attacks & enemy_pieces;
+            while captures != 0 {
+                let to_sq = captures.trailing_zeros() as u8;
+                captures &= captures - 1;
+                moves.push(Move { from: from_sq, to: to_sq, promotion: None, is_castling: false, is_en_passant: false });
+            }
+        }
+
+        // Queen captures
+        let mut our_queens = self.queens & our_pieces;
+        while our_queens != 0 {
+            let from_sq = our_queens.trailing_zeros() as u8;
+            our_queens &= our_queens - 1;
+            let attacks = crate::moves::magic_bitboards::get_queen_attacks_magic(from_sq, all_pieces);
+            let mut captures = attacks & enemy_pieces;
+            while captures != 0 {
+                let to_sq = captures.trailing_zeros() as u8;
+                captures &= captures - 1;
+                moves.push(Move { from: from_sq, to: to_sq, promotion: None, is_castling: false, is_en_passant: false });
+            }
+        }
+
+        // King captures (sem roque)
+        let our_king = self.kings & our_pieces;
+        if our_king != 0 {
+            let from_sq = our_king.trailing_zeros() as u8;
+            let mut captures = moves::king::get_king_attacks(from_sq) & enemy_pieces;
+            while captures != 0 {
+                let to_sq = captures.trailing_zeros() as u8;
+                captures &= captures - 1;
+                moves.push(Move { from: from_sq, to: to_sq, promotion: None, is_castling: false, is_en_passant: false });
+            }
+        }
+
+        moves
+    }
+
     /// Gera movimentos de peças deslizantes usando magic bitboards diretamente (OTIMIZADO)
     #[inline(always)]
     pub(crate) fn generate_sliding_moves(&self, moves: &mut Vec<Move>) {

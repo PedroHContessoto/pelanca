@@ -23,6 +23,7 @@ pub struct SearchInfo {
     pub nodes: u64,
     pub time_ms: u64,
     pub nps: u64,
+    pub hashfull: u32,
     pub pv: Vec<Move>,
     pub currmove: Option<Move>,
     pub currmovenumber: Option<u32>,
@@ -93,7 +94,7 @@ pub trait Searcher {
         &mut self,
         board: &Board,
         config: &SearchConfig,
-        info_cb: &mut dyn FnMut(&SearchInfo),
+        _info_cb: &mut dyn FnMut(&SearchInfo),
     ) -> SearchResult {
         // Default: busca normal sem info
         self.search(board, config)

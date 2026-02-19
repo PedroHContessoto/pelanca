@@ -60,10 +60,8 @@ pub fn move_from_uci(board: &Board, uci_str: &str) -> Option<Move> {
             }
             (Some(_), None) => {
                 // Promoção sem especificar peça: default para dama
-                if mv.promotion == Some(crate::core::types::PieceKind::Queen) {
-                    if board.is_legal_move(mv) {
-                        return Some(mv);
-                    }
+                if mv.promotion == Some(crate::core::types::PieceKind::Queen) && board.is_legal_move(mv) {
+                    return Some(mv);
                 }
             }
         }

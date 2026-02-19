@@ -295,18 +295,14 @@ fn generate_pawn_captures_into(board: &Board, moves: &mut Vec<Move>) {
             if ep_rank == 5 {
                 if ep_target % 8 > 0 {
                     let from_sq = ep_target - 9;
-                    if from_sq / 8 == 4 {
-                        if (our_pawns & (1u64 << from_sq)) != 0 {
-                            moves.push(Move { from: from_sq, to: ep_target, promotion: None, is_castling: false, is_en_passant: true });
-                        }
+                    if from_sq / 8 == 4 && (our_pawns & (1u64 << from_sq)) != 0 {
+                        moves.push(Move { from: from_sq, to: ep_target, promotion: None, is_castling: false, is_en_passant: true });
                     }
                 }
                 if ep_target % 8 < 7 {
                     let from_sq = ep_target - 7;
-                    if from_sq / 8 == 4 {
-                        if (our_pawns & (1u64 << from_sq)) != 0 {
-                            moves.push(Move { from: from_sq, to: ep_target, promotion: None, is_castling: false, is_en_passant: true });
-                        }
+                    if from_sq / 8 == 4 && (our_pawns & (1u64 << from_sq)) != 0 {
+                        moves.push(Move { from: from_sq, to: ep_target, promotion: None, is_castling: false, is_en_passant: true });
                     }
                 }
             }
@@ -351,18 +347,14 @@ fn generate_pawn_captures_into(board: &Board, moves: &mut Vec<Move>) {
             if ep_rank == 2 {
                 if ep_target % 8 > 0 {
                     let from_sq = ep_target + 7;
-                    if from_sq / 8 == 3 {
-                        if (our_pawns & (1u64 << from_sq)) != 0 {
-                            moves.push(Move { from: from_sq, to: ep_target, promotion: None, is_castling: false, is_en_passant: true });
-                        }
+                    if from_sq / 8 == 3 && (our_pawns & (1u64 << from_sq)) != 0 {
+                        moves.push(Move { from: from_sq, to: ep_target, promotion: None, is_castling: false, is_en_passant: true });
                     }
                 }
                 if ep_target % 8 < 7 {
                     let from_sq = ep_target + 9;
-                    if from_sq / 8 == 3 {
-                        if (our_pawns & (1u64 << from_sq)) != 0 {
-                            moves.push(Move { from: from_sq, to: ep_target, promotion: None, is_castling: false, is_en_passant: true });
-                        }
+                    if from_sq / 8 == 3 && (our_pawns & (1u64 << from_sq)) != 0 {
+                        moves.push(Move { from: from_sq, to: ep_target, promotion: None, is_castling: false, is_en_passant: true });
                     }
                 }
             }
@@ -418,18 +410,14 @@ pub fn generate_pawn_captures(board: &Board) -> Vec<Move> {
             if ep_rank == 5 {
                 if ep_target % 8 > 0 {
                     let from_sq = ep_target - 9;
-                    if from_sq / 8 == 4 {
-                        if (our_pawns & (1u64 << from_sq)) != 0 {
-                            moves.push(Move { from: from_sq, to: ep_target, promotion: None, is_castling: false, is_en_passant: true });
-                        }
+                    if from_sq / 8 == 4 && (our_pawns & (1u64 << from_sq)) != 0 {
+                        moves.push(Move { from: from_sq, to: ep_target, promotion: None, is_castling: false, is_en_passant: true });
                     }
                 }
                 if ep_target % 8 < 7 {
                     let from_sq = ep_target - 7;
-                    if from_sq / 8 == 4 {
-                        if (our_pawns & (1u64 << from_sq)) != 0 {
-                            moves.push(Move { from: from_sq, to: ep_target, promotion: None, is_castling: false, is_en_passant: true });
-                        }
+                    if from_sq / 8 == 4 && (our_pawns & (1u64 << from_sq)) != 0 {
+                        moves.push(Move { from: from_sq, to: ep_target, promotion: None, is_castling: false, is_en_passant: true });
                     }
                 }
             }
@@ -474,18 +462,14 @@ pub fn generate_pawn_captures(board: &Board) -> Vec<Move> {
             if ep_rank == 2 {
                 if ep_target % 8 > 0 {
                     let from_sq = ep_target + 7;
-                    if from_sq / 8 == 3 {
-                        if (our_pawns & (1u64 << from_sq)) != 0 {
-                            moves.push(Move { from: from_sq, to: ep_target, promotion: None, is_castling: false, is_en_passant: true });
-                        }
+                    if from_sq / 8 == 3 && (our_pawns & (1u64 << from_sq)) != 0 {
+                        moves.push(Move { from: from_sq, to: ep_target, promotion: None, is_castling: false, is_en_passant: true });
                     }
                 }
                 if ep_target % 8 < 7 {
                     let from_sq = ep_target + 9;
-                    if from_sq / 8 == 3 {
-                        if (our_pawns & (1u64 << from_sq)) != 0 {
-                            moves.push(Move { from: from_sq, to: ep_target, promotion: None, is_castling: false, is_en_passant: true });
-                        }
+                    if from_sq / 8 == 3 && (our_pawns & (1u64 << from_sq)) != 0 {
+                        moves.push(Move { from: from_sq, to: ep_target, promotion: None, is_castling: false, is_en_passant: true });
                     }
                 }
             }

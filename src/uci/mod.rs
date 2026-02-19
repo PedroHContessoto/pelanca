@@ -26,6 +26,17 @@ impl UciEngine {
 
     fn new_game(&mut self) {
         self.board = Board::new();
+        self.searcher.tt_mut().clear();
+    }
+
+    fn set_option(&mut self, tokens: &[&str]) {
+        // setoption name Hash value 128
+        if tokens.len() >= 4 && tokens[0].eq_ignore_ascii_case("name") && tokens[1].eq_ignore_ascii_case("Hash") && tokens[2].eq_ignore_ascii_case("value") {
+            if let Ok(mb) = tokens[3].parse::<usize>() {
+                let mb = mb.clamp(1, 1024);
+                self.searcher.tt_mut().resize(mb);
+            }
+        }
     }
 
     fn set_position(&mut self, tokens: &[&str]) {
@@ -75,8 +86,8 @@ fn print_info(info: &SearchInfo) {
         .join(" ");
 
     let mut line = format!(
-        "info depth {} {} nodes {} nps {} time {}",
-        info.depth, score_str, info.nodes, info.nps, info.time_ms
+        "info depth {} {} nodes {} nps {} time {} hashfull {}",
+        info.depth, score_str, info.nodes, info.nps, info.time_ms, info.hashfull
     );
 
     if !pv_str.is_empty() {
@@ -112,13 +123,14 @@ pub fn run() {
             Err(_) => break,
         };
 
-        let tokens: Vec<&str> = line.trim().split_whitespace().collect();
+        let tokens: Vec<&str> = line.split_whitespace().collect();
         if tokens.is_empty() { continue; }
 
         match tokens[0] {
             "uci" => handle_uci(),
             "isready" => println!("readyok"),
             "ucinewgame" => engine.new_game(),
+            "setoption" => engine.set_option(&tokens[1..]),
             "position" => engine.set_position(&tokens[1..]),
             "go" => engine.go(&tokens[1..]),
             "stop" => engine.stop(),

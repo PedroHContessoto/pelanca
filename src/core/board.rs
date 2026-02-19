@@ -110,8 +110,8 @@ impl Board {
 
         // En passant (parts[3])
         if parts[3] != "-" {
-            let file = (parts[3].as_bytes()[0] - b'a') as u8;
-            let rank = (parts[3].as_bytes()[1] - b'1') as u8;
+            let file = parts[3].as_bytes()[0] - b'a';
+            let rank = parts[3].as_bytes()[1] - b'1';
             board.en_passant_target = Some(rank * 8 + file);
         }
 
@@ -161,6 +161,17 @@ impl Board {
 
         board.zobrist_hash = board.compute_zobrist_hash();
         board
+    }
+
+    /// Null move: passa a vez sem mover. Usado para Null Move Pruning.
+    /// Flipa o lado, limpa en passant, atualiza zobrist.
+    pub fn make_null_move(&mut self) {
+        self.zobrist_hash ^= ZOBRIST_KEYS.side_to_move;
+        if let Some(ep_square) = self.en_passant_target {
+            self.zobrist_hash ^= ZOBRIST_KEYS.en_passant[(ep_square % 8) as usize];
+        }
+        self.en_passant_target = None;
+        self.to_move = !self.to_move;
     }
 
     /// Executa um lance, atualizando o estado do tabuleiro.
@@ -439,18 +450,16 @@ impl Board {
                     self.white_pieces ^= rook_from | rook_to;
                     self.rooks ^= rook_from | rook_to;
                 }
-            } else {
-                if mv.to == 62 { // Roque pequeno
-                    let rook_from = 1u64 << 61; // f8
-                    let rook_to = 1u64 << 63;   // h8
-                    self.black_pieces ^= rook_from | rook_to;
-                    self.rooks ^= rook_from | rook_to;
-                } else { // Roque grande
-                    let rook_from = 1u64 << 59; // d8
-                    let rook_to = 1u64 << 56;   // a8
-                    self.black_pieces ^= rook_from | rook_to;
-                    self.rooks ^= rook_from | rook_to;
-                }
+            } else if mv.to == 62 { // Roque pequeno
+                let rook_from = 1u64 << 61; // f8
+                let rook_to = 1u64 << 63;   // h8
+                self.black_pieces ^= rook_from | rook_to;
+                self.rooks ^= rook_from | rook_to;
+            } else { // Roque grande
+                let rook_from = 1u64 << 59; // d8
+                let rook_to = 1u64 << 56;   // a8
+                self.black_pieces ^= rook_from | rook_to;
+                self.rooks ^= rook_from | rook_to;
             }
             return; // Roque não tem capturas
         }
@@ -594,35 +603,6 @@ impl Board {
             PieceKind::King => self.kings,
         };
         (color_pieces & piece_bb).count_ones()
-    }
-
-    /// Verifica se há peões passados (útil para avaliação)
-    pub fn has_passed_pawn(&self, color: Color) -> bool {
-        let my_pawns = if color == Color::White { self.white_pieces } else { self.black_pieces } & self.pawns;
-        let enemy_pawns = if color == Color::White { self.black_pieces } else { self.white_pieces } & self.pawns;
-
-        let mut bb = my_pawns;
-        while bb != 0 {
-            let square = bb.trailing_zeros() as u8;
-            bb &= bb - 1;
-
-            let file = square % 8;
-            let rank = square / 8;
-
-            let front_span = if color == Color::White {
-                let mask = !((1u64 << (rank + 1) * 8) - 1);
-                mask & (0x0101010101010101u64 << file)
-            } else {
-                let mask = (1u64 << (rank * 8)) - 1;
-                mask & (0x0101010101010101u64 << file)
-            };
-
-            // Verifica se há peões inimigos à frente
-            if (enemy_pawns & front_span) == 0 {
-                return true;
-            }
-        }
-        false
     }
 
     /// Identifica que peça está em uma casa específica (otimizado para make/unmake)

@@ -5,4 +5,6 @@ pub mod eval;
 pub mod search;
 
 pub use traits::*;
+pub use eval::{MaterialEvaluator, PstEvaluator};
+pub use search::NegamaxSearcher;
 pub use perft_tt::PerftTT;

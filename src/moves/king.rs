@@ -50,47 +50,27 @@ pub fn generate_king_moves_into(board: &Board, moves: &mut Vec<Move>) {
     // Lógica de roque com validação completa
     if board.to_move == Color::White {
         // Roque pequeno das brancas (e1-g1)
-        if (board.castling_rights & 0b0001) != 0 {
-            if (board.white_pieces | board.black_pieces) & 0b01100000 == 0 {
-                if !board.is_king_in_check(Color::White) && 
-                   !board.is_square_attacked_by(5, Color::Black) && 
-                   !board.is_square_attacked_by(6, Color::Black) {
-                    moves.push(Move { from: 4, to: 6, promotion: None, is_castling: true, is_en_passant: false });
-                }
-            }
+        if (board.castling_rights & 0b0001) != 0 && (board.white_pieces | board.black_pieces) & 0b01100000 == 0 && !board.is_king_in_check(Color::White) && 
+                   !board.is_square_attacked_by(5, Color::Black) && !board.is_square_attacked_by(6, Color::Black) {
+            moves.push(Move { from: 4, to: 6, promotion: None, is_castling: true, is_en_passant: false });
         }
         
         // Roque grande das brancas (e1-c1)
-        if (board.castling_rights & 0b0010) != 0 {
-            if (board.white_pieces | board.black_pieces) & 0b00001110 == 0 {
-                if !board.is_king_in_check(Color::White) && 
-                   !board.is_square_attacked_by(3, Color::Black) && 
-                   !board.is_square_attacked_by(2, Color::Black) {
-                    moves.push(Move { from: 4, to: 2, promotion: None, is_castling: true, is_en_passant: false });
-                }
-            }
+        if (board.castling_rights & 0b0010) != 0 && (board.white_pieces | board.black_pieces) & 0b00001110 == 0 && !board.is_king_in_check(Color::White) && 
+                   !board.is_square_attacked_by(3, Color::Black) && !board.is_square_attacked_by(2, Color::Black) {
+            moves.push(Move { from: 4, to: 2, promotion: None, is_castling: true, is_en_passant: false });
         }
     } else {
         // Roque pequeno das pretas (e8-g8)
-        if (board.castling_rights & 0b0100) != 0 {
-            if (board.white_pieces | board.black_pieces) & 0x6000000000000000 == 0 {
-                if !board.is_king_in_check(Color::Black) && 
-                   !board.is_square_attacked_by(61, Color::White) && 
-                   !board.is_square_attacked_by(62, Color::White) {
-                    moves.push(Move { from: 60, to: 62, promotion: None, is_castling: true, is_en_passant: false });
-                }
-            }
+        if (board.castling_rights & 0b0100) != 0 && (board.white_pieces | board.black_pieces) & 0x6000000000000000 == 0 && !board.is_king_in_check(Color::Black) && 
+                   !board.is_square_attacked_by(61, Color::White) && !board.is_square_attacked_by(62, Color::White) {
+            moves.push(Move { from: 60, to: 62, promotion: None, is_castling: true, is_en_passant: false });
         }
         
         // Roque grande das pretas (e8-c8)
-        if (board.castling_rights & 0b1000) != 0 {
-            if (board.white_pieces | board.black_pieces) & 0x0e00000000000000 == 0 {
-                if !board.is_king_in_check(Color::Black) && 
-                   !board.is_square_attacked_by(59, Color::White) && 
-                   !board.is_square_attacked_by(58, Color::White) {
-                    moves.push(Move { from: 60, to: 58, promotion: None, is_castling: true, is_en_passant: false });
-                }
-            }
+        if (board.castling_rights & 0b1000) != 0 && (board.white_pieces | board.black_pieces) & 0x0e00000000000000 == 0 && !board.is_king_in_check(Color::Black) && 
+                   !board.is_square_attacked_by(59, Color::White) && !board.is_square_attacked_by(58, Color::White) {
+            moves.push(Move { from: 60, to: 58, promotion: None, is_castling: true, is_en_passant: false });
         }
     }
 }
