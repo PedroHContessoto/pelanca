@@ -20,3 +20,18 @@ fn initial_position_is_not_game_over() {
     let board = Board::new();
     assert!(!board.is_game_over(), "Initial position must not be terminal");
 }
+
+#[test]
+fn from_fen_parses_start_position_without_panicking() {
+    let board = Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+        .expect("valid start position FEN should parse");
+
+    assert_eq!(board.castling_rights, 0b1111);
+    assert_eq!(board.generate_legal_moves().len(), 20);
+}
+
+#[test]
+fn from_fen_rejects_rows_with_invalid_square_count() {
+    let invalid = Board::from_fen("8/8/8/8/8/8/8/9 w - - 0 1");
+    assert!(invalid.is_err(), "FEN rows with more than 8 squares must be rejected");
+}
