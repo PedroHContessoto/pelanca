@@ -39,6 +39,10 @@ pub struct NegamaxSearcher<E: Evaluator> {
     killer_moves: [[Option<Move>; 2]; MAX_PLY],
     history: [[i32; 64]; 64],
     lmr_table: [[u8; 64]; 64],
+    /// Hashes from game history (UCI position moves) for repetition detection.
+    game_history: Vec<u64>,
+    /// Working copy: game_history + search path hashes. Push/pop during search.
+    rep_stack: Vec<u64>,
 }
 
 impl<E: Evaluator> NegamaxSearcher<E> {
@@ -53,7 +57,14 @@ impl<E: Evaluator> NegamaxSearcher<E> {
             killer_moves: [[None; 2]; MAX_PLY],
             history: [[0i32; 64]; 64],
             lmr_table: compute_lmr_table(),
+            game_history: Vec::new(),
+            rep_stack: Vec::new(),
         }
+    }
+
+    /// Set position history (zobrist hashes) from UCI game moves for repetition detection.
+    pub fn set_position_history(&mut self, hashes: Vec<u64>) {
+        self.game_history = hashes;
     }
 
     pub fn tt_mut(&mut self) -> &mut TranspositionTable {
@@ -195,6 +206,14 @@ impl<E: Evaluator> NegamaxSearcher<E> {
         if *entry > 1_000_000 { *entry = 1_000_000; }
     }
 
+    /// Check for repetition: if the current hash appears in the rep_stack, it's a draw.
+    /// Uses single-repetition in search (= twofold from game start).
+    #[inline]
+    fn is_repetition(&self, hash: u64) -> bool {
+        // Walk backwards through rep_stack; a match means repetition
+        self.rep_stack.iter().rev().any(|&h| h == hash)
+    }
+
     /// Verifica se o lado a mover tem peças maiores (não-peão, não-rei) para NMP.
     #[inline]
     fn has_non_pawn_material(board: &Board) -> bool {
@@ -265,6 +284,7 @@ impl<E: Evaluator> NegamaxSearcher<E> {
 
     /// Busca raiz com PVS.
     fn search_root(&mut self, board: &Board, depth: u8, mut alpha: Score, beta: Score) -> SearchResult {
+        let original_alpha = alpha;
         let moves = board.generate_all_moves();
         let in_check = board.is_king_in_check(board.to_move);
 
@@ -280,24 +300,26 @@ impl<E: Evaluator> NegamaxSearcher<E> {
         let mut best_score = -SCORE_INF;
         let mut best_pv = Vec::new();
         let mut moves_searched = 0u32;
+        let mut has_legal_move = false;
+
+        // Push root position hash for repetition detection
+        self.rep_stack.push(board.zobrist_hash);
 
         for (mv, _) in &scored_moves {
             let mv = *mv;
             let mut child = *board;
             if !child.make_move(mv) { continue; }
 
+            has_legal_move = true;
             let mut child_pv = Vec::new();
             let effective_depth = if in_check { depth } else { depth - 1 };
 
             let score;
             if moves_searched == 0 {
-                // Primeiro lance: janela completa
                 score = -self.negamax(&child, effective_depth, -beta, -alpha, 1, &mut child_pv);
             } else {
-                // PVS: zero-window search
                 let mut zw_score = -self.negamax(&child, effective_depth, -alpha - 1, -alpha, 1, &mut child_pv);
                 if zw_score > alpha && zw_score < beta {
-                    // Re-search com janela completa
                     child_pv.clear();
                     zw_score = -self.negamax(&child, effective_depth, -beta, -alpha, 1, &mut child_pv);
                 }
@@ -316,12 +338,29 @@ impl<E: Evaluator> NegamaxSearcher<E> {
                 best_pv.extend_from_slice(&child_pv);
             }
             if score > alpha { alpha = score; }
+            if alpha >= beta { break; }
         }
 
+        // Pop root hash
+        self.rep_stack.pop();
+
+        // Handle checkmate/stalemate
+        if !has_legal_move {
+            best_score = if in_check { -SCORE_MATE } else { SCORE_DRAW };
+        }
+
+        // TT store with correct bound
         if let Some(bm) = best_move {
+            let bound = if best_score >= beta {
+                Bound::Lower
+            } else if best_score > original_alpha {
+                Bound::Exact
+            } else {
+                Bound::Upper
+            };
             self.tt.store(
                 board.zobrist_hash, depth,
-                Self::score_to_tt(best_score, 0), Bound::Exact, pack_move(bm),
+                Self::score_to_tt(best_score, 0), bound, pack_move(bm),
             );
         }
 
@@ -351,6 +390,11 @@ impl<E: Evaluator> NegamaxSearcher<E> {
         if self.should_stop() { return 0; }
 
         if board.is_draw_by_insufficient_material() || board.is_draw_by_50_moves() {
+            return SCORE_DRAW;
+        }
+
+        // Repetition detection: if this position appeared before, it's a draw
+        if ply > 0 && self.is_repetition(board.zobrist_hash) {
             return SCORE_DRAW;
         }
 
@@ -399,6 +443,18 @@ impl<E: Evaluator> NegamaxSearcher<E> {
             }
         }
 
+        // === FUTILITY PRUNING setup ===
+        // At low depths, skip quiet moves if static eval is far below alpha
+        let static_eval = self.evaluator.evaluate(board);
+        let futility_margin = match depth {
+            1 => 200,
+            2 => 500,
+            3 => 900,
+            _ => 0,
+        };
+        let can_futility = !is_pv && !in_check && depth <= 3 && futility_margin > 0
+            && static_eval + futility_margin <= alpha;
+
         let moves = board.generate_all_moves();
         let ply_idx = ply as usize;
 
@@ -410,6 +466,9 @@ impl<E: Evaluator> NegamaxSearcher<E> {
         let mut best_move_found: Option<Move> = None;
         let mut has_legal_move = false;
         let mut moves_searched = 0u32;
+
+        // Push current position for repetition detection in children
+        self.rep_stack.push(board.zobrist_hash);
 
         for i in 0..scored_moves.len() {
             // Pick best
@@ -424,12 +483,18 @@ impl<E: Evaluator> NegamaxSearcher<E> {
             if !child.make_move(mv) { continue; }
 
             has_legal_move = true;
-            let mut child_pv = Vec::new();
 
             let is_cap = Self::is_capture(board, mv);
             let is_promo = mv.promotion.is_some();
             let gives_check = child.is_king_in_check(child.to_move);
 
+            // Futility pruning: skip quiet moves that can't raise alpha
+            if can_futility && moves_searched > 0 && !is_cap && !is_promo && !gives_check {
+                moves_searched += 1;
+                continue;
+            }
+
+            let mut child_pv = Vec::new();
             let score;
             if moves_searched == 0 {
                 // Primeiro lance: busca completa
@@ -489,6 +554,9 @@ impl<E: Evaluator> NegamaxSearcher<E> {
             }
         }
 
+        // Pop current position from repetition stack
+        self.rep_stack.pop();
+
         if !has_legal_move {
             if in_check {
                 return -SCORE_MATE + ply as Score;
@@ -533,6 +601,8 @@ impl<E: Evaluator> Searcher for NegamaxSearcher<E> {
         self.time_limit_ms = self.calculate_time(config, board.to_move);
         self.tt.new_search();
         self.clear_move_ordering();
+        // Initialize repetition stack from game history
+        self.rep_stack = self.game_history.clone();
 
         let mut best_result = SearchResult {
             best_move: None,

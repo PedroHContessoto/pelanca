@@ -5,6 +5,8 @@ pub mod parser;
 
 use std::io::{self, BufRead};
 use std::sync::atomic::Ordering;
+use std::sync::mpsc;
+use std::thread;
 use crate::core::board::Board;
 use crate::engine::traits::*;
 use crate::engine::eval::PstEvaluator;
@@ -30,7 +32,6 @@ impl UciEngine {
     }
 
     fn set_option(&mut self, tokens: &[&str]) {
-        // setoption name Hash value 128
         if tokens.len() >= 4 && tokens[0].eq_ignore_ascii_case("name") && tokens[1].eq_ignore_ascii_case("Hash") && tokens[2].eq_ignore_ascii_case("value") {
             if let Ok(mb) = tokens[3].parse::<usize>() {
                 let mb = mb.clamp(1, 1024);
@@ -40,22 +41,21 @@ impl UciEngine {
     }
 
     fn set_position(&mut self, tokens: &[&str]) {
-        if let Some(board) = parser::parse_position(tokens) {
+        if let Some((board, history)) = parser::parse_position(tokens) {
             self.board = board;
+            self.searcher.set_position_history(history);
         }
     }
 
     fn go(&mut self, tokens: &[&str]) {
         let config = parser::parse_go(tokens);
 
-        // Callback para imprimir info UCI durante busca
         let mut info_cb = |info: &SearchInfo| {
             print_info(info);
         };
 
         let result = self.searcher.search_with_info(&self.board, &config, &mut info_cb);
 
-        // bestmove
         if let Some(mv) = result.best_move {
             if let Some(ponder) = result.ponder_move {
                 println!("bestmove {} ponder {}", mv, ponder);
@@ -65,10 +65,6 @@ impl UciEngine {
         } else {
             println!("bestmove 0000");
         }
-    }
-
-    fn stop(&mut self) {
-        self.searcher.stop_flag().store(true, Ordering::Relaxed);
     }
 }
 
@@ -106,19 +102,48 @@ fn print_info(info: &SearchInfo) {
 
 /// Imprime identificação e opções do motor.
 fn handle_uci() {
-    println!("id name Pelanca Mate v1");
+    println!("id name Pelanca Mate v2");
     println!("id author Pedro Contessoto");
     println!("option name Hash type spin default 16 min 1 max 1024");
     println!("uciok");
 }
 
-/// Loop principal UCI. Lê stdin, despacha comandos.
+/// Loop principal UCI com threading para suportar "stop" durante busca.
+///
+/// Stdin é lido numa thread separada que envia linhas via channel.
+/// Quando "stop" é recebido durante busca, a thread de stdin seta o AtomicBool
+/// diretamente, interrompendo a busca em no máximo 2048 nós.
 pub fn run() {
     let mut engine = UciEngine::new();
-    let stdin = io::stdin();
+    let stop_flag = engine.searcher.stop_flag();
 
-    for line in stdin.lock().lines() {
-        let line = match line {
+    // Channel: stdin reader -> main loop
+    let (tx, rx) = mpsc::channel::<String>();
+
+    // Stdin reader thread — also handles "stop" and "quit" by setting the atomic flag
+    let stop_for_stdin = stop_flag.clone();
+    thread::spawn(move || {
+        let stdin = io::stdin();
+        for line in stdin.lock().lines() {
+            match line {
+                Ok(l) => {
+                    // Fast-path: if "stop" or "quit", set flag immediately without waiting
+                    // for main thread to process the line from the channel
+                    let trimmed = l.trim();
+                    if trimmed == "stop" || trimmed == "quit" {
+                        stop_for_stdin.store(true, Ordering::Relaxed);
+                    }
+                    if tx.send(l).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    loop {
+        let line = match rx.recv() {
             Ok(l) => l,
             Err(_) => break,
         };
@@ -133,9 +158,12 @@ pub fn run() {
             "setoption" => engine.set_option(&tokens[1..]),
             "position" => engine.set_position(&tokens[1..]),
             "go" => engine.go(&tokens[1..]),
-            "stop" => engine.stop(),
+            "stop" => {
+                // Already handled by stdin thread setting stop_flag.
+                // This processes the queued "stop" after search finishes — no-op.
+            }
             "quit" => break,
-            _ => {} // UCI spec: ignorar comandos desconhecidos
+            _ => {}
         }
     }
 }

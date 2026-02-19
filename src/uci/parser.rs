@@ -71,7 +71,9 @@ pub fn move_from_uci(board: &Board, uci_str: &str) -> Option<Move> {
 }
 
 /// Parse do comando "position [startpos|fen ...] [moves ...]"
-pub fn parse_position(tokens: &[&str]) -> Option<Board> {
+/// Returns (board, position_history) where position_history contains zobrist hashes
+/// of all positions reached during the game (for repetition detection).
+pub fn parse_position(tokens: &[&str]) -> Option<(Board, Vec<u64>)> {
     if tokens.is_empty() { return None; }
 
     let (mut board, rest) = if tokens[0] == "startpos" {
@@ -83,7 +85,6 @@ pub fn parse_position(tokens: &[&str]) -> Option<Board> {
         };
         (board, rest)
     } else if tokens[0] == "fen" {
-        // Juntar as partes do FEN (até "moves" ou fim)
         let moves_idx = tokens.iter().position(|&t| t == "moves");
         let fen_end = moves_idx.unwrap_or(tokens.len());
         let fen_str = tokens[1..fen_end].join(" ");
@@ -97,16 +98,21 @@ pub fn parse_position(tokens: &[&str]) -> Option<Board> {
         return None;
     };
 
+    // Collect zobrist hashes for repetition detection
+    let mut history = Vec::with_capacity(rest.len() + 1);
+    history.push(board.zobrist_hash);
+
     // Aplicar movimentos
     for move_str in rest {
         if let Some(mv) = move_from_uci(&board, move_str) {
             board.make_move(mv);
+            history.push(board.zobrist_hash);
         } else {
             return None;
         }
     }
 
-    Some(board)
+    Some((board, history))
 }
 
 /// Parse do comando "go [wtime X] [btime X] [winc X] [binc X] [depth X] ..."

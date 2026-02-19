@@ -50,6 +50,31 @@ impl Board {
         // Pawn captures (reusa a função existente)
         moves.extend(moves::pawn::generate_pawn_captures(self));
 
+        // Non-capture queen promotions (pawn pushes to 8th/1st rank to empty square)
+        let our_pawns = self.pawns & our_pieces;
+        let empty = !(self.white_pieces | self.black_pieces);
+        if self.to_move == Color::White {
+            // White pawns on rank 7 (bits 48-55) pushing to rank 8
+            let promo_pawns = our_pawns & 0x00FF000000000000u64;
+            let mut pushes = (promo_pawns << 8) & empty;
+            while pushes != 0 {
+                let to_sq = pushes.trailing_zeros() as u8;
+                pushes &= pushes - 1;
+                let from_sq = to_sq - 8;
+                moves.push(Move { from: from_sq, to: to_sq, promotion: Some(PieceKind::Queen), is_castling: false, is_en_passant: false });
+            }
+        } else {
+            // Black pawns on rank 2 (bits 8-15) pushing to rank 1
+            let promo_pawns = our_pawns & 0x000000000000FF00u64;
+            let mut pushes = (promo_pawns >> 8) & empty;
+            while pushes != 0 {
+                let to_sq = pushes.trailing_zeros() as u8;
+                pushes &= pushes - 1;
+                let from_sq = to_sq + 8;
+                moves.push(Move { from: from_sq, to: to_sq, promotion: Some(PieceKind::Queen), is_castling: false, is_en_passant: false });
+            }
+        }
+
         // Knight captures
         let mut our_knights = self.knights & our_pieces;
         while our_knights != 0 {

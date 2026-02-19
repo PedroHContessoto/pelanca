@@ -49,7 +49,8 @@ impl TTEntry {
     }
 }
 
-/// Empacota um Move em 16 bits: from(6) | to(6) | promo(3) | special(1)
+/// Empacota um Move em 16 bits: from(6) | to(6) | promo(3) | flags(1)
+/// flags bit: 0 = castling, 1 = en passant (mutuamente exclusivos)
 pub fn pack_move(mv: Move) -> u16 {
     let from = (mv.from & 0x3F) as u16;
     let to = (mv.to & 0x3F) as u16;
@@ -61,11 +62,15 @@ pub fn pack_move(mv: Move) -> u16 {
         Some(PieceKind::Queen) => 4,
         _ => 0,
     };
+    // Bit 15 = is_castling ou is_en_passant (distinguidos pela geometria)
     let special = if mv.is_castling || mv.is_en_passant { 1u16 } else { 0 };
     from | (to << 6) | (promo << 12) | (special << 15)
 }
 
 /// Desempacota 16 bits para Move. Retorna None se packed == 0.
+/// Castling vs en passant é deduzido pela geometria do lance:
+///   - Castling: rei move 2 casas (from=4/60, |to-from|=2)
+///   - En passant: peão captura diagonal (diferença de file=1, special bit set, no promo)
 pub fn unpack_move(packed: u16) -> Option<Move> {
     if packed == 0 {
         return None;
@@ -80,14 +85,26 @@ pub fn unpack_move(packed: u16) -> Option<Move> {
         4 => Some(PieceKind::Queen),
         _ => None,
     };
-    // special bit indica castling ou en passant — não conseguimos distinguir
-    // apenas pelo packed, mas o move generator vai resolver na hora de usar
+    let special = (packed >> 15) & 1;
+
+    let mut is_castling = false;
+    let mut is_en_passant = false;
+
+    if special != 0 {
+        // Castling: king from e1(4) or e8(60), moves 2 squares
+        if (from == 4 || from == 60) && ((to as i8 - from as i8).abs() == 2) {
+            is_castling = true;
+        } else {
+            is_en_passant = true;
+        }
+    }
+
     Some(Move {
         from,
         to,
         promotion,
-        is_castling: false,
-        is_en_passant: false,
+        is_castling,
+        is_en_passant,
     })
 }
 
@@ -187,13 +204,12 @@ impl TranspositionTable {
         self.generation = 0;
     }
 
-    /// Hashfull: proporção de entradas usadas (0-1000 para UCI).
+    /// Hashfull: proporção de entradas usadas da geração atual (0-1000 para UCI).
     pub fn hashfull(&self) -> u32 {
-        // Amostragem dos primeiros 1000 slots
         let sample = self.table.len().min(1000);
         let used = self.table[..sample]
             .iter()
-            .filter(|e| e.depth > 0)
+            .filter(|e| e.depth > 0 && e.age == self.generation)
             .count();
         (used as u32 * 1000) / sample as u32
     }
