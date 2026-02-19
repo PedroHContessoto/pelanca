@@ -152,7 +152,13 @@ impl<E: Evaluator> NegamaxSearcher<E> {
         if let Some(v) = victim {
             let attacker = board.get_piece_at(mv.from);
             let ai = attacker.map(|a| Self::piece_index(a.kind)).unwrap_or(0);
-            return 1_000_000 + MVV_VALUES[Self::piece_index(v.kind)] * 10 + LVA_VALUES[ai];
+            let mvvlva = MVV_VALUES[Self::piece_index(v.kind)] * 10 + LVA_VALUES[ai];
+            // Good captures (SEE >= 0) above killers, bad captures below quiet moves
+            if board.see_ge(mv, 0) {
+                return 1_000_000 + mvvlva;
+            } else {
+                return -100_000 + mvvlva; // Bad capture: below killers/history
+            }
         }
 
         if mv.is_en_passant {
@@ -199,11 +205,12 @@ impl<E: Evaluator> NegamaxSearcher<E> {
     }
 
     #[inline]
-    fn update_history(&mut self, mv: Move, depth: u8) {
-        let bonus = (depth as i32) * (depth as i32);
+    fn update_history(&mut self, mv: Move, depth: u8, is_good: bool) {
+        let raw_bonus = (depth as i32) * (depth as i32);
+        let bonus = if is_good { raw_bonus } else { -raw_bonus };
         let entry = &mut self.history[mv.from as usize][mv.to as usize];
-        *entry += bonus;
-        if *entry > 1_000_000 { *entry = 1_000_000; }
+        // Gravity-based update: prevents saturation, recent moves matter more
+        *entry += bonus - *entry * raw_bonus.abs() / 16384;
     }
 
     /// Check for repetition: if the current hash appears in the rep_stack, it's a draw.
@@ -222,21 +229,33 @@ impl<E: Evaluator> NegamaxSearcher<E> {
     }
 
     /// Quiescence search.
-    fn quiescence(&mut self, board: &Board, mut alpha: Score, beta: Score, ply: u8) -> Score {
+    fn quiescence(&mut self, board: &Board, mut alpha: Score, beta: Score, ply: u8, qply: u8) -> Score {
         self.nodes_searched += 1;
 
         if self.should_stop() { return 0; }
 
-        let stand_pat = self.evaluator.evaluate(board);
-        if stand_pat >= beta { return beta; }
-        if stand_pat > alpha { alpha = stand_pat; }
+        let in_check = board.is_king_in_check(board.to_move);
 
-        // Big delta pruning
-        if stand_pat + 1100 < alpha { return alpha; }
-        if ply >= MAX_PLY as u8 { return stand_pat; }
+        // If in check, don't use stand-pat (must escape check)
+        if !in_check {
+            let stand_pat = self.evaluator.evaluate(board);
+            if stand_pat >= beta { return beta; }
+            if stand_pat > alpha { alpha = stand_pat; }
 
-        let captures = board.generate_capture_moves();
-        let mut scored: Vec<(Move, i32)> = captures.iter()
+            // Big delta pruning
+            if stand_pat + 1100 < alpha { return alpha; }
+        }
+
+        if ply >= MAX_PLY as u8 { return self.evaluator.evaluate(board); }
+
+        // If in check, search all evasion moves (not just captures)
+        let moves = if in_check {
+            board.generate_all_moves()
+        } else {
+            board.generate_capture_moves()
+        };
+
+        let mut scored: Vec<(Move, i32)> = moves.iter()
             .map(|&mv| {
                 let score = if let Some(v) = board.get_piece_at(mv.to) {
                     let ai = board.get_piece_at(mv.from).map(|a| Self::piece_index(a.kind)).unwrap_or(0);
@@ -248,6 +267,8 @@ impl<E: Evaluator> NegamaxSearcher<E> {
             })
             .collect();
 
+        let mut has_legal = false;
+
         for i in 0..scored.len() {
             // Pick best
             let mut best_idx = i;
@@ -257,19 +278,36 @@ impl<E: Evaluator> NegamaxSearcher<E> {
             scored.swap(i, best_idx);
             let mv = scored[i].0;
 
-            // Delta pruning per-move
-            let victim_val = if let Some(v) = board.get_piece_at(mv.to) {
-                MVV_VALUES[Self::piece_index(v.kind)]
-            } else if mv.is_en_passant { MVV_VALUES[0] } else { 0 };
-            if stand_pat + victim_val + 200 < alpha { continue; }
+            // Pruning only for non-check positions
+            if !in_check {
+                let is_capture = board.get_piece_at(mv.to).is_some() || mv.is_en_passant;
+                if is_capture {
+                    // Delta pruning per-move
+                    let stand_pat = self.evaluator.evaluate(board);
+                    let victim_val = if let Some(v) = board.get_piece_at(mv.to) {
+                        MVV_VALUES[Self::piece_index(v.kind)]
+                    } else if mv.is_en_passant { MVV_VALUES[0] } else { 0 };
+                    if stand_pat + victim_val + 200 < alpha { continue; }
+
+                    // SEE pruning: skip bad captures
+                    if !board.see_ge(mv, 0) { continue; }
+                }
+            }
 
             let mut child = *board;
             if !child.make_move(mv) { continue; }
 
-            let score = -self.quiescence(&child, -beta, -alpha, ply + 1);
+            has_legal = true;
+
+            let score = -self.quiescence(&child, -beta, -alpha, ply + 1, qply + 1);
             if self.should_stop() { return 0; }
             if score >= beta { return beta; }
             if score > alpha { alpha = score; }
+        }
+
+        // If in check and no legal moves, it's checkmate
+        if in_check && !has_legal {
+            return -SCORE_MATE + ply as Score;
         }
 
         alpha
@@ -427,7 +465,7 @@ impl<E: Evaluator> NegamaxSearcher<E> {
         }
 
         if depth == 0 {
-            return self.quiescence(board, alpha, beta, ply);
+            return self.quiescence(board, alpha, beta, ply, 0);
         }
 
         // === NULL MOVE PRUNING ===
@@ -438,14 +476,25 @@ impl<E: Evaluator> NegamaxSearcher<E> {
             null_board.make_null_move();
             let mut null_pv = Vec::new();
             let null_score = -self.negamax(&null_board, depth - 1 - r, -beta, -beta + 1, ply + 1, &mut null_pv);
+            if self.should_stop() { return 0; }
             if null_score >= beta {
                 return beta;
             }
         }
 
+        let static_eval = self.evaluator.evaluate(board);
+
+        // === REVERSE FUTILITY PRUNING (static null move pruning) ===
+        // If static eval is far above beta, no move search is likely to drop it below beta
+        if !is_pv && !in_check && depth <= 6 {
+            let rfp_margin = 80 * depth as Score;
+            if static_eval - rfp_margin >= beta {
+                return static_eval - rfp_margin;
+            }
+        }
+
         // === FUTILITY PRUNING setup ===
         // At low depths, skip quiet moves if static eval is far below alpha
-        let static_eval = self.evaluator.evaluate(board);
         let futility_margin = match depth {
             1 => 200,
             2 => 500,
@@ -506,9 +555,9 @@ impl<E: Evaluator> NegamaxSearcher<E> {
                     let d = (depth as usize).min(63);
                     let m = (moves_searched as usize).min(63);
                     reduction = self.lmr_table[d][m];
-                    // Limitar redução: pelo menos depth 1
-                    if reduction >= depth - 1 {
-                        reduction = depth - 2;
+                    // Clamp: ensure reduced_depth >= 1 (i.e. depth-1-reduction >= 1)
+                    if depth <= 2 + reduction {
+                        reduction = if depth >= 3 { depth - 3 } else { 0 };
                     }
                 }
 
@@ -548,7 +597,14 @@ impl<E: Evaluator> NegamaxSearcher<E> {
             if alpha >= beta {
                 if !is_cap && !is_promo {
                     self.update_killers(mv, ply_idx);
-                    self.update_history(mv, depth);
+                    self.update_history(mv, depth, true);
+                    // History malus: penalize all quiet moves searched before the cutoff move
+                    for k in 0..i {
+                        let prev_mv = scored_moves[k].0;
+                        if !Self::is_capture(board, prev_mv) && prev_mv.promotion.is_none() {
+                            self.update_history(prev_mv, depth, false);
+                        }
+                    }
                 }
                 break;
             }
@@ -619,8 +675,8 @@ impl<E: Evaluator> Searcher for NegamaxSearcher<E> {
         for depth in 1..=max_depth {
             let result;
 
-            if depth <= 3 {
-                // Sem aspiration nas primeiras depths
+            if depth <= 1 {
+                // Full window at depth 1 (no previous score to anchor)
                 result = self.search_root(board, depth, -SCORE_INF, SCORE_INF);
             } else {
                 // Aspiration windows

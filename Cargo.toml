@@ -6,7 +6,7 @@ authors = ["Pedro Contessoto"]
 description = "High-performance chess engine written in Rust"
 
 [[bin]]
-name = "pelanca_mate_v2"
+name = "pelanca_mate_v3"
 path = "src/main.rs"
 
 

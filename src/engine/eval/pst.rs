@@ -4,6 +4,8 @@
 use crate::core::board::Board;
 use crate::core::types::{Bitboard, Color};
 use crate::engine::traits::{Evaluator, Score};
+use crate::moves::magic_bitboards::{get_bishop_attacks_magic, get_rook_attacks_magic, get_queen_attacks_magic};
+use crate::moves::knight::get_knight_attacks;
 
 // ============================================================================
 // Piece-Square Tables (perspectiva Brancas, a1=index 0, h8=index 63)
@@ -147,6 +149,16 @@ const ROOK_OPEN_FILE_BONUS: Score = 20;
 const ROOK_SEMI_OPEN_FILE_BONUS: Score = 10;
 const KING_CENTER_PENALTY: Score = -30;
 
+// Mobility bonuses per square available (MG, EG)
+const KNIGHT_MOBILITY: [Score; 2] = [4, 4];    // ~0-8 squares
+const BISHOP_MOBILITY: [Score; 2] = [5, 5];    // ~0-13 squares
+const ROOK_MOBILITY: [Score; 2] = [2, 4];      // ~0-14 squares
+const QUEEN_MOBILITY: [Score; 2] = [1, 2];     // ~0-27 squares
+
+const KNIGHT_OUTPOST_BONUS: Score = 25;
+const ROOK_SEVENTH_BONUS: Score = 20;
+const BACKWARD_PAWN_PENALTY: Score = -10;
+
 // ============================================================================
 // File masks
 // ============================================================================
@@ -182,8 +194,12 @@ impl Evaluator for PstEvaluator {
         let black_mg = eval_side_mg(board, Color::Black);
         let black_eg = eval_side_eg(board, Color::Black);
 
-        let mg_score = white_mg - black_mg;
-        let eg_score = white_eg - black_eg;
+        // Mobility (computed once, returns MG/EG separately)
+        let (w_mob_mg, w_mob_eg) = eval_mobility(board, Color::White);
+        let (b_mob_mg, b_mob_eg) = eval_mobility(board, Color::Black);
+
+        let mg_score = white_mg - black_mg + w_mob_mg - b_mob_mg;
+        let eg_score = white_eg - black_eg + w_mob_eg - b_mob_eg;
 
         // Tapered: interpolate between mg and eg based on phase
         let score = (mg_score * phase + eg_score * (256 - phase)) / 256;
@@ -192,7 +208,7 @@ impl Evaluator for PstEvaluator {
     }
 
     fn name(&self) -> &str {
-        "pst-eval-v2"
+        "pst-eval-v3"
     }
 }
 
@@ -231,6 +247,10 @@ fn eval_side_mg(board: &Board, color: Color) -> Score {
     while bb != 0 {
         let sq = bb.trailing_zeros() as usize;
         score += KNIGHT_VALUE + pst_value(&KNIGHT_PST, sq, color);
+        // Knight outpost bonus
+        if is_knight_outpost(sq as u8, our_pawns, enemy_pawns, color) {
+            score += KNIGHT_OUTPOST_BONUS;
+        }
         bb &= bb - 1;
     }
 
@@ -249,6 +269,7 @@ fn eval_side_mg(board: &Board, color: Color) -> Score {
     while bb != 0 {
         let sq = bb.trailing_zeros() as usize;
         let file = sq % 8;
+        let rank = sq / 8;
         score += ROOK_VALUE + pst_value(&ROOK_PST, sq, color);
         if (our_pawns & FILE_MASKS[file]) == 0 {
             if (enemy_pawns & FILE_MASKS[file]) == 0 {
@@ -257,6 +278,12 @@ fn eval_side_mg(board: &Board, color: Color) -> Score {
                 score += ROOK_SEMI_OPEN_FILE_BONUS;
             }
         }
+        // Rook on 7th rank bonus
+        let on_seventh = match color {
+            Color::White => rank == 6,
+            Color::Black => rank == 1,
+        };
+        if on_seventh { score += ROOK_SEVENTH_BONUS; }
         bb &= bb - 1;
     }
 
@@ -268,12 +295,13 @@ fn eval_side_mg(board: &Board, color: Color) -> Score {
         bb &= bb - 1;
     }
 
-    // King (middlegame PST + safety)
+    // King (middlegame PST + safety + attacker penalty)
     bb = board.kings & our_pieces;
     if bb != 0 {
         let sq = bb.trailing_zeros() as usize;
         score += pst_value(&KING_MIDDLEGAME_PST, sq, color);
         score += eval_king_safety(sq, our_pawns, color);
+        score += eval_king_attackers(board, color);
     }
 
     // Pawn structure
@@ -322,6 +350,7 @@ fn eval_side_eg(board: &Board, color: Color) -> Score {
     while bb != 0 {
         let sq = bb.trailing_zeros() as usize;
         let file = sq % 8;
+        let rank = sq / 8;
         score += ROOK_VALUE + pst_value(&ROOK_PST, sq, color);
         if (our_pawns & FILE_MASKS[file]) == 0 {
             if (enemy_pawns & FILE_MASKS[file]) == 0 {
@@ -330,6 +359,12 @@ fn eval_side_eg(board: &Board, color: Color) -> Score {
                 score += ROOK_SEMI_OPEN_FILE_BONUS;
             }
         }
+        // Rook on 7th rank (even more valuable in endgame)
+        let on_seventh = match color {
+            Color::White => rank == 6,
+            Color::Black => rank == 1,
+        };
+        if on_seventh { score += ROOK_SEVENTH_BONUS + 10; }
         bb &= bb - 1;
     }
 
@@ -384,6 +419,10 @@ fn eval_pawn_structure(our_pawns: Bitboard, enemy_pawns: Bitboard, color: Color)
                     };
                     score += PASSED_PAWN_BONUS[rank as usize];
                 }
+
+                if is_backward_pawn(sq, our_pawns, enemy_pawns, color) {
+                    score += BACKWARD_PAWN_PENALTY;
+                }
             }
         }
     }
@@ -418,7 +457,7 @@ fn is_passed_pawn(sq: u8, enemy_pawns: Bitboard, color: Color) -> bool {
     (enemy_pawns & file_mask & ahead) == 0
 }
 
-/// Avalia segurança do rei: escudo de peões + penalidade por centro.
+/// Avalia segurança do rei: escudo de peões + penalidade por centro + atacantes.
 #[inline]
 fn eval_king_safety(king_sq: usize, our_pawns: Bitboard, color: Color) -> Score {
     let king_file = king_sq % 8;
@@ -456,7 +495,251 @@ fn eval_king_safety(king_sq: usize, our_pawns: Bitboard, color: Color) -> Score 
         }
     }
 
+    // Open/semi-open file near king penalty
+    let king_zone_files: &[usize] = match king_file {
+        0 => &[0, 1],
+        7 => &[6, 7],
+        _ => &[king_file - 1, king_file, king_file + 1],
+    };
+    for &f in king_zone_files {
+        if (our_pawns & FILE_MASKS[f]) == 0 {
+            score -= 10; // Open file near king
+        }
+    }
+
     score
+}
+
+/// Evaluate king danger from enemy attacking pieces (called from mg eval).
+/// Returns a penalty (negative) for the defending side.
+#[inline]
+fn eval_king_attackers(board: &Board, color: Color) -> Score {
+    let our_pieces = match color { Color::White => board.white_pieces, Color::Black => board.black_pieces };
+    let enemy_pieces = match color { Color::White => board.black_pieces, Color::Black => board.white_pieces };
+    let all_pieces = board.white_pieces | board.black_pieces;
+
+    let our_king = board.kings & our_pieces;
+    if our_king == 0 { return 0; }
+    let king_sq = our_king.trailing_zeros() as u8;
+    let king_zone = crate::moves::king::get_king_attacks(king_sq) | (1u64 << king_sq);
+
+    let mut attacker_count = 0i32;
+    let mut attack_weight = 0i32;
+
+    // Enemy knights attacking king zone
+    let mut bb = board.knights & enemy_pieces;
+    while bb != 0 {
+        let sq = bb.trailing_zeros() as u8;
+        bb &= bb - 1;
+        if (get_knight_attacks(sq) & king_zone) != 0 {
+            attacker_count += 1;
+            attack_weight += 2;
+        }
+    }
+
+    // Enemy bishops attacking king zone
+    let mut bb = board.bishops & enemy_pieces;
+    while bb != 0 {
+        let sq = bb.trailing_zeros() as u8;
+        bb &= bb - 1;
+        if (get_bishop_attacks_magic(sq, all_pieces) & king_zone) != 0 {
+            attacker_count += 1;
+            attack_weight += 2;
+        }
+    }
+
+    // Enemy rooks attacking king zone
+    let mut bb = board.rooks & enemy_pieces;
+    while bb != 0 {
+        let sq = bb.trailing_zeros() as u8;
+        bb &= bb - 1;
+        if (get_rook_attacks_magic(sq, all_pieces) & king_zone) != 0 {
+            attacker_count += 1;
+            attack_weight += 3;
+        }
+    }
+
+    // Enemy queens attacking king zone
+    let mut bb = board.queens & enemy_pieces;
+    while bb != 0 {
+        let sq = bb.trailing_zeros() as u8;
+        bb &= bb - 1;
+        if (get_queen_attacks_magic(sq, all_pieces) & king_zone) != 0 {
+            attacker_count += 1;
+            attack_weight += 5;
+        }
+    }
+
+    // Scale penalty quadratically by number of attackers
+    if attacker_count >= 2 {
+        -(attack_weight * attacker_count * 5)
+    } else {
+        0
+    }
+}
+
+/// Compute piece mobility for one side. Returns (mg_bonus, eg_bonus).
+#[inline]
+fn eval_mobility(board: &Board, color: Color) -> (Score, Score) {
+    let our_pieces = match color { Color::White => board.white_pieces, Color::Black => board.black_pieces };
+    let all_pieces = board.white_pieces | board.black_pieces;
+    // Exclude own pieces + squares attacked by enemy pawns from mobility targets
+    let enemy_pawns = board.pawns & match color { Color::White => board.black_pieces, Color::Black => board.white_pieces };
+    let pawn_attacks = match color {
+        Color::White => ((enemy_pawns & !FILE_MASKS[0]) >> 9) | ((enemy_pawns & !FILE_MASKS[7]) >> 7),
+        Color::Black => ((enemy_pawns & !FILE_MASKS[7]) << 9) | ((enemy_pawns & !FILE_MASKS[0]) << 7),
+    };
+    let safe = !our_pieces & !pawn_attacks;
+
+    let mut mg: Score = 0;
+    let mut eg: Score = 0;
+
+    // Knights
+    let mut bb = board.knights & our_pieces;
+    while bb != 0 {
+        let sq = bb.trailing_zeros() as u8;
+        bb &= bb - 1;
+        let moves = (get_knight_attacks(sq) & safe).count_ones() as Score;
+        mg += moves * KNIGHT_MOBILITY[0];
+        eg += moves * KNIGHT_MOBILITY[1];
+    }
+
+    // Bishops
+    let mut bb = board.bishops & our_pieces;
+    while bb != 0 {
+        let sq = bb.trailing_zeros() as u8;
+        bb &= bb - 1;
+        let moves = (get_bishop_attacks_magic(sq, all_pieces) & safe).count_ones() as Score;
+        mg += moves * BISHOP_MOBILITY[0];
+        eg += moves * BISHOP_MOBILITY[1];
+    }
+
+    // Rooks
+    let mut bb = board.rooks & our_pieces;
+    while bb != 0 {
+        let sq = bb.trailing_zeros() as u8;
+        bb &= bb - 1;
+        let moves = (get_rook_attacks_magic(sq, all_pieces) & safe).count_ones() as Score;
+        mg += moves * ROOK_MOBILITY[0];
+        eg += moves * ROOK_MOBILITY[1];
+    }
+
+    // Queens
+    let mut bb = board.queens & our_pieces;
+    while bb != 0 {
+        let sq = bb.trailing_zeros() as u8;
+        bb &= bb - 1;
+        let moves = (get_queen_attacks_magic(sq, all_pieces) & safe).count_ones() as Score;
+        mg += moves * QUEEN_MOBILITY[0];
+        eg += moves * QUEEN_MOBILITY[1];
+    }
+
+    (mg, eg)
+}
+
+/// Check if a square is an outpost for a knight (supported by own pawn, no enemy pawn can attack it).
+#[inline]
+fn is_knight_outpost(sq: u8, our_pawns: Bitboard, enemy_pawns: Bitboard, color: Color) -> bool {
+    let file = (sq % 8) as usize;
+    let rank = sq / 8;
+
+    // Must be on rank 4-6 for white (3-5 for black, 0-indexed)
+    let on_outpost_rank = match color {
+        Color::White => rank >= 3 && rank <= 5,
+        Color::Black => rank >= 2 && rank <= 4,
+    };
+    if !on_outpost_rank { return false; }
+
+    // No enemy pawn can attack this square (check adjacent files ahead)
+    let adj_files = if file > 0 && file < 7 {
+        FILE_MASKS[file - 1] | FILE_MASKS[file + 1]
+    } else if file == 0 {
+        FILE_MASKS[1]
+    } else {
+        FILE_MASKS[6]
+    };
+
+    // Check if any enemy pawn is on adjacent files at same rank or behind (can advance to attack)
+    let enemy_can_attack = match color {
+        Color::White => {
+            let mut mask = 0u64;
+            for r in rank..8 { mask |= 0xFFu64 << (r * 8); }
+            (enemy_pawns & adj_files & mask) == 0
+        }
+        Color::Black => {
+            let mut mask = 0u64;
+            for r in 0..=rank { mask |= 0xFFu64 << (r * 8); }
+            (enemy_pawns & adj_files & mask) == 0
+        }
+    };
+    if !enemy_can_attack { return false; }
+
+    // Supported by own pawn
+    let support = match color {
+        Color::White => {
+            let mut sup = 0u64;
+            if file > 0 && rank > 0 { sup |= 1u64 << (sq - 9); }
+            if file < 7 && rank > 0 { sup |= 1u64 << (sq - 7); }
+            sup
+        }
+        Color::Black => {
+            let mut sup = 0u64;
+            if file > 0 && rank < 7 { sup |= 1u64 << (sq + 7); }
+            if file < 7 && rank < 7 { sup |= 1u64 << (sq + 9); }
+            sup
+        }
+    };
+
+    (our_pawns & support) != 0
+}
+
+/// Check if a pawn is backward (no own pawns on adjacent files behind it, and advance is blocked by enemy pawn).
+#[inline]
+fn is_backward_pawn(sq: u8, our_pawns: Bitboard, enemy_pawns: Bitboard, color: Color) -> bool {
+    let file = (sq % 8) as usize;
+    let rank = sq / 8;
+
+    let adj_files = ADJACENT_FILES[file];
+
+    // Check if any own pawn is behind or beside on adjacent files
+    let behind = match color {
+        Color::White => {
+            let mut mask = 0u64;
+            for r in 0..=rank { mask |= 0xFFu64 << (r * 8); }
+            mask
+        }
+        Color::Black => {
+            let mut mask = 0u64;
+            for r in rank..8 { mask |= 0xFFu64 << (r * 8); }
+            mask
+        }
+    };
+
+    if (our_pawns & adj_files & behind) != 0 { return false; }
+
+    // The advance square is attacked by enemy pawn
+    let advance_sq = match color {
+        Color::White => if rank < 7 { sq + 8 } else { return false; },
+        Color::Black => if rank > 0 { sq - 8 } else { return false; },
+    };
+
+    let adv_file = (advance_sq % 8) as usize;
+    let enemy_pawn_attacks = match color {
+        Color::White => {
+            let mut atk = 0u64;
+            if adv_file > 0 { atk |= 1u64 << (advance_sq + 7); }
+            if adv_file < 7 { atk |= 1u64 << (advance_sq + 9); }
+            atk
+        }
+        Color::Black => {
+            let mut atk = 0u64;
+            if adv_file > 0 && advance_sq >= 9 { atk |= 1u64 << (advance_sq - 9); }
+            if adv_file < 7 && advance_sq >= 7 { atk |= 1u64 << (advance_sq - 7); }
+            atk
+        }
+    };
+
+    (enemy_pawns & enemy_pawn_attacks) != 0
 }
 
 #[inline(always)]
