@@ -110,8 +110,8 @@ impl std::fmt::Display for Move {
 
 // Adicione estas duas funções auxiliares no mesmo ficheiro
 fn to_algebraic(sq: u8) -> String {
-    let file = (sq % 8) as u8 + b'a';
-    let rank = (sq / 8) as u8 + b'1';
+    let file = (sq % 8) + b'a';
+    let rank = (sq / 8) + b'1';
     format!("{}{}", file as char, rank as char)
 }
 

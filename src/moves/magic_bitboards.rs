@@ -175,7 +175,7 @@ fn calculate_rook_attacks(square: u8, occupancy: Bitboard) -> Bitboard {
     for (dr, df) in directions {
         let mut r = rank + dr;
         let mut f = file + df;
-        while r >= 0 && r < 8 && f >= 0 && f < 8 {
+        while (0..8).contains(&r) && (0..8).contains(&f) {
             let target = (r * 8 + f) as u8;
             let target_bb = 1u64 << target;
             result |= target_bb;
@@ -200,7 +200,7 @@ fn calculate_bishop_attacks(square: u8, occupancy: Bitboard) -> Bitboard {
         let mut r = rank + dr;
         let mut f = file + df;
 
-        while r >= 0 && r < 8 && f >= 0 && f < 8 {
+        while (0..8).contains(&r) && (0..8).contains(&f) {
             let target = (r * 8 + f) as u8;
             let target_bb = 1u64 << target;
             result |= target_bb;

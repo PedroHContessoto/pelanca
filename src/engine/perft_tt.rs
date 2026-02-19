@@ -7,6 +7,12 @@ pub struct PerftTT {
     misses: u64,
 }
 
+impl Default for PerftTT {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PerftTT {
     pub fn new() -> Self {
         PerftTT {

@@ -50,6 +50,12 @@ impl TimerStats {
     }
 }
 
+impl Default for PerformanceProfiler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PerformanceProfiler {
     pub fn new() -> Self {
         PerformanceProfiler {
@@ -124,7 +130,7 @@ impl PerformanceProfiler {
                     stats.average().as_micros()
                 ));
             }
-            report.push_str("\n");
+            report.push('\n');
         } else {
             report.push_str("TIMERS: Bloqueado ou em uso\n\n");
         }
@@ -144,7 +150,7 @@ impl PerformanceProfiler {
                     counter.load(Ordering::Relaxed)
                 ));
             }
-            report.push_str("\n");
+            report.push('\n');
         } else {
             report.push_str("CONTADORES: Bloqueado ou em uso\n\n");
         }
@@ -156,16 +162,6 @@ impl PerformanceProfiler {
         report.push_str("- Funções com muitas chamadas podem se beneficiar de cache\n\n");
 
         report
-    }
-
-    /// Analisa gargalos e gera recomendações (versão simplificada)
-    fn analyze_bottlenecks(&self, report: &mut String) {
-        // Versão simplificada para evitar deadlocks
-        report.push_str("DICAS DE OTIMIZAÇÃO:\n");
-        report.push_str("- Verifique funções com >100ms de tempo total\n");
-        report.push_str("- Funções com >10000 chamadas podem ser otimizadas\n");
-        report.push_str("- Use cache para avaliações repetitivas\n");
-        report.push_str("- Otimize geração de movimentos se necessário\n\n");
     }
 
     /// Limpa todas as estatísticas
@@ -213,7 +209,7 @@ static PROFILER: OnceLock<PerformanceProfiler> = OnceLock::new();
 
 /// Acessa o profiler global
 pub fn get_profiler() -> &'static PerformanceProfiler {
-    PROFILER.get_or_init(|| PerformanceProfiler::new())
+    PROFILER.get_or_init(PerformanceProfiler::new)
 }
 
 /// Macro para facilitar o profiling
@@ -221,7 +217,7 @@ pub fn get_profiler() -> &'static PerformanceProfiler {
 macro_rules! profile {
     ($name:expr, $code:block) => {
         {
-            let _timer = crate::profiling::get_profiler().start_timer($name);
+            let _timer = $crate::profiling::get_profiler().start_timer($name);
             $code
         }
     };
@@ -231,10 +227,10 @@ macro_rules! profile {
 #[macro_export]
 macro_rules! count {
     ($name:expr) => {
-        crate::profiling::PROFILER.increment_counter($name);
+        $crate::profiling::PROFILER.increment_counter($name);
     };
     ($name:expr, $value:expr) => {
-        crate::profiling::PROFILER.add_to_counter($name, $value);
+        $crate::profiling::PROFILER.add_to_counter($name, $value);
     };
 }
 
