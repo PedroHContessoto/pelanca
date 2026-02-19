@@ -1,4 +1,9 @@
-// Pelanca Chess Engine - Entry Point
+// Pelanca Mate v1 - Entry Point
+//
+// Uso:
+//   pelanca_mate_v1           -> Modo UCI (para Arena e outras GUIs)
+//   pelanca_mate_v1 --bench   -> Modo benchmark (PERFT + busca)
+
 use pelanca::*;
 use pelanca::engine::perft::perft_parallel;
 use pelanca::engine::eval::MaterialEvaluator;
@@ -7,9 +12,19 @@ use pelanca::engine::{Searcher, SearchConfig};
 use std::time::Instant;
 
 fn main() {
-    println!("=== Pelanca Chess Engine ===\n");
+    let args: Vec<String> = std::env::args().collect();
 
-    // === PERFT ===
+    if args.iter().any(|a| a == "--bench") {
+        run_bench();
+    } else {
+        pelanca::uci::run();
+    }
+}
+
+fn run_bench() {
+    println!("=== Pelanca Mate v1 - Benchmark ===\n");
+
+    // PERFT
     println!("--- PERFT (posicao inicial) ---");
     let mut board = Board::from_fen(
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
@@ -28,23 +43,26 @@ fn main() {
             nodes as f64 / elapsed.as_secs_f64());
     }
 
-    // === BUSCA ===
-    println!("\n--- Negamax Alpha-Beta ---");
+    // Busca
+    println!("\n--- Negamax Alpha-Beta (Iterative Deepening) ---");
     let board = Board::new();
     let eval = MaterialEvaluator;
     let mut searcher = NegamaxSearcher::new(eval);
 
-    for depth in 1..=5 {
-        let config = SearchConfig { max_depth: depth };
-        let start = Instant::now();
-        let result = searcher.search(&board, &config);
-        let elapsed = start.elapsed();
+    let config = SearchConfig { max_depth: 6, ..Default::default() };
+    let start = Instant::now();
+    let result = searcher.search(&board, &config);
+    let elapsed = start.elapsed();
 
-        println!("Depth {}: melhor lance = {}, score = {}, nos = {} ({}ms)",
-            depth,
-            result.best_move.map(|m| m.to_string()).unwrap_or("none".into()),
-            result.score,
-            result.nodes_searched,
-            elapsed.as_millis());
+    println!("Depth {}: melhor lance = {}, score = {}, nos = {} ({}ms)",
+        result.depth,
+        result.best_move.map(|m| m.to_string()).unwrap_or("none".into()),
+        result.score,
+        result.nodes_searched,
+        elapsed.as_millis());
+
+    if !result.pv.is_empty() {
+        let pv_str: Vec<String> = result.pv.iter().map(|m| m.to_string()).collect();
+        println!("PV: {}", pv_str.join(" "));
     }
 }
