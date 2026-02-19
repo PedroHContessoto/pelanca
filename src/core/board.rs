@@ -1,8 +1,7 @@
-// Ficheiro: src/board.rs
-// Descrição: Módulo que contém a struct Board e os seus métodos principais.
+// Ficheiro: src/core/board.rs
+// Descrição: Struct Board e métodos de construção, execução e desfazer movimentos.
 
 use super::types::*;
-use crate::moves;
 use super::zobrist::{ZOBRIST_KEYS, piece_to_index, color_to_index};
 
 // A struct principal do tabuleiro, usando Bitboards.
@@ -164,21 +163,6 @@ impl Board {
         board
     }
 
-    /// Gera todos os lances pseudo-legais para todas as peças do jogador atual (ULTRA-OTIMIZADO)
-    pub fn generate_all_moves(&self) -> Vec<Move> {
-        // Pre-aloca com capacidade otimizada para posições médias
-        let mut moves = Vec::with_capacity(100);
-
-        // OTIMIZAÇÃO CRÍTICA: Eliminados TODOS os Vec::extend!
-        moves::pawn::generate_pawn_moves_into(self, &mut moves);
-        moves::knight::generate_knight_moves_into(self, &mut moves);
-        self.generate_sliding_moves(&mut moves);
-        moves::queen::generate_queen_moves_into(self, &mut moves);
-        moves::king::generate_king_moves_into(self, &mut moves);
-
-        moves
-    }
-
     /// Executa um lance, atualizando o estado do tabuleiro.
     /// Retorna `true` se o lance é legal (não deixa o próprio rei em xeque).
     pub fn make_move(&mut self, mv: Move) -> bool {
@@ -211,7 +195,7 @@ impl Board {
         let color_idx = color_to_index(moving_color);
         let piece_kind = self.get_piece_at(mv.from).unwrap().kind;
         let piece_idx = piece_to_index(piece_kind);
-        
+
         let captured_piece_info = if is_capture {
             self.get_piece_at(mv.to)
         } else {
@@ -388,155 +372,157 @@ impl Board {
             self.zobrist_hash ^= ZOBRIST_KEYS.en_passant[(ep_square % 8) as usize];
         }
         self.zobrist_hash ^= ZOBRIST_KEYS.castling[self.castling_rights as usize];
-        
+
         // Verifica se o movimento é legal (não deixa o próprio rei em xeque)
         !self.is_king_in_check(moving_color)
     }
 
-    /// Verifica se o rei da cor especificada está em xeque (usa cache)
-    pub fn is_king_in_check(&self, color: Color) -> bool {
-        if color == Color::White {
-            self.white_king_in_check
+    /// Executa um movimento e retorna informação para desfazê-lo
+    pub fn make_move_with_undo(&mut self, mv: Move) -> UndoInfo {
+        let (captured_piece, captured_square) = self.get_captured_piece(mv);
+        let moved_piece = self.get_piece_at(mv.from).unwrap().kind; // Identifica peça movida
+
+        let undo_info = UndoInfo {
+            captured_piece,
+            captured_square,
+            moved_piece,
+            old_castling_rights: self.castling_rights,
+            old_en_passant_target: self.en_passant_target,
+            old_halfmove_clock: self.halfmove_clock,
+            old_zobrist_hash: self.zobrist_hash,
+            old_white_king_in_check: self.white_king_in_check,
+            old_black_king_in_check: self.black_king_in_check,
+        };
+
+        self.make_move(mv);
+        undo_info
+    }
+
+    /// Desfaz um movimento usando a informação de UndoInfo (CORRIGIDO PARA MOVIMENTOS ESPECIAIS)
+    pub fn unmake_move(&mut self, mv: Move, undo_info: UndoInfo) {
+        // Restaura o estado anterior
+        self.castling_rights = undo_info.old_castling_rights;
+        self.en_passant_target = undo_info.old_en_passant_target;
+        self.halfmove_clock = undo_info.old_halfmove_clock;
+        self.zobrist_hash = undo_info.old_zobrist_hash;
+        self.white_king_in_check = undo_info.old_white_king_in_check;
+        self.black_king_in_check = undo_info.old_black_king_in_check;
+
+        // Inverte a cor do jogador
+        self.to_move = !self.to_move;
+        let moving_color = self.to_move; // Cor original da peça que se moveu
+        let from_bb = 1u64 << mv.from;
+        let to_bb = 1u64 << mv.to;
+
+        // ========================================================================
+        // TRATAMENTO ESPECIAL PARA ROQUE
+        // ========================================================================
+        if mv.is_castling {
+            // Move o rei de volta
+            if moving_color == Color::White {
+                self.white_pieces ^= from_bb | to_bb;
+            } else {
+                self.black_pieces ^= from_bb | to_bb;
+            }
+            self.kings ^= from_bb | to_bb;
+
+            // Move a torre de volta
+            if moving_color == Color::White {
+                if mv.to == 6 { // Roque pequeno
+                    let rook_from = 1u64 << 5; // f1
+                    let rook_to = 1u64 << 7;   // h1
+                    self.white_pieces ^= rook_from | rook_to;
+                    self.rooks ^= rook_from | rook_to;
+                } else { // Roque grande
+                    let rook_from = 1u64 << 3; // d1
+                    let rook_to = 1u64 << 0;   // a1
+                    self.white_pieces ^= rook_from | rook_to;
+                    self.rooks ^= rook_from | rook_to;
+                }
+            } else {
+                if mv.to == 62 { // Roque pequeno
+                    let rook_from = 1u64 << 61; // f8
+                    let rook_to = 1u64 << 63;   // h8
+                    self.black_pieces ^= rook_from | rook_to;
+                    self.rooks ^= rook_from | rook_to;
+                } else { // Roque grande
+                    let rook_from = 1u64 << 59; // d8
+                    let rook_to = 1u64 << 56;   // a8
+                    self.black_pieces ^= rook_from | rook_to;
+                    self.rooks ^= rook_from | rook_to;
+                }
+            }
+            return; // Roque não tem capturas
+        }
+
+        // ========================================================================
+        // TRATAMENTO ESPECIAL PARA PROMOÇÃO
+        // ========================================================================
+        if let Some(promoted) = mv.promotion {
+            // Restaura peão na casa de origem
+            self.pawns |= from_bb;
+
+            // Remove peça promovida da casa de destino
+            match promoted {
+                PieceKind::Queen => self.queens &= !to_bb,
+                PieceKind::Rook => self.rooks &= !to_bb,
+                PieceKind::Bishop => self.bishops &= !to_bb,
+                PieceKind::Knight => self.knights &= !to_bb,
+                _ => unreachable!(),
+            }
+
+            // Atualiza ocupação (peão volta para from, peça promovida sai de to)
+            if moving_color == Color::White {
+                self.white_pieces ^= from_bb | to_bb;
+            } else {
+                self.black_pieces ^= from_bb | to_bb;
+            }
         } else {
-            self.black_king_in_check
-        }
-    }
+            // ====================================================================
+            // MOVIMENTO NORMAL (NÃO-PROMOÇÃO)
+            // ====================================================================
 
-    /// Atualiza o cache de estado de xeque para ambos os reis
-    fn update_check_cache(&mut self) {
-        self.white_king_in_check = self.compute_king_in_check(Color::White);
-        self.black_king_in_check = self.compute_king_in_check(Color::Black);
-    }
+            // Atualiza ocupação
+            if moving_color == Color::White {
+                self.white_pieces ^= from_bb | to_bb;
+            } else {
+                self.black_pieces ^= from_bb | to_bb;
+            }
 
-    /// Calcula se o rei da cor especificada está em xeque (sem usar cache)
-    fn compute_king_in_check(&self, color: Color) -> bool {
-        // Encontra a posição do rei
-        let king_bb = self.kings & if color == Color::White { self.white_pieces } else { self.black_pieces };
-        if king_bb == 0 { return false; } // Não há rei (situação anormal)
-
-        let king_square = king_bb.trailing_zeros() as u8;
-
-        // Verifica se alguma peça inimiga pode atacar o rei
-        self.is_square_attacked_by(king_square, !color)
-    }
-
-    /// Verifica se uma casa é atacada por peças da cor especificada
-    pub fn is_square_attacked_by(&self, square: u8, attacking_color: Color) -> bool {
-        let _square_bb = 1u64 << square;
-        let attacking_pieces = if attacking_color == Color::White { self.white_pieces } else { self.black_pieces };
-
-        // Early exit: se não há peças atacantes, não há ataques
-        if attacking_pieces == 0 { return false; }
-
-        // Verifica ataques de peões usando reverse attacks (O(1) em vez de O(n))
-        if (self.pawns & attacking_pieces) != 0 {
-            let pawn_attackers = crate::moves::pawn::get_pawn_attackers(square, attacking_color);
-            if (pawn_attackers & self.pawns & attacking_pieces) != 0 { return true; }
-        }
-
-        // Verifica ataques de cavalos
-        if (self.knights & attacking_pieces) != 0 {
-            let knight_attacks = crate::moves::knight::get_knight_attacks(square);
-            if (knight_attacks & self.knights & attacking_pieces) != 0 { return true; }
-        }
-
-        // Verifica ataques do rei
-        if (self.kings & attacking_pieces) != 0 {
-            let king_attacks = crate::moves::king::get_king_attacks(square);
-            if (king_attacks & self.kings & attacking_pieces) != 0 { return true; }
-        }
-
-        // Verifica ataques de peças deslizantes usando magic bitboards
-        let all_pieces = self.white_pieces | self.black_pieces;
-        
-        // Ataques de rainha (combinação de torre + bispo)
-        if (self.queens & attacking_pieces) != 0 {
-            let queen_attacks = crate::moves::queen::get_queen_attacks(square, all_pieces);
-            if (queen_attacks & self.queens & attacking_pieces) != 0 { return true; }
-        }
-        
-        // Ataques de bispo
-        if (self.bishops & attacking_pieces) != 0 {
-            let bishop_attacks = crate::moves::magic_bitboards::get_bishop_attacks_magic(square, all_pieces);
-            if (bishop_attacks & self.bishops & attacking_pieces) != 0 { return true; }
-        }
-        
-        // Ataques de torre
-        if (self.rooks & attacking_pieces) != 0 {
-            let rook_attacks = crate::moves::magic_bitboards::get_rook_attacks_magic(square, all_pieces);
-            if (rook_attacks & self.rooks & attacking_pieces) != 0 { return true; }
-        }
-
-        false
-    }
-
-
-    /// Verifica se a posição atual é xeque-mate
-    pub fn is_checkmate(&self) -> bool {
-        if !self.is_king_in_check(self.to_move) {
-            return false;
-        }
-
-        let moves = self.generate_all_moves();
-        moves.iter().all(|&mv| {
-            let mut temp = *self;
-            temp.make_move(mv);
-            temp.is_king_in_check(self.to_move)
-        })
-    }
-
-    /// Verifica se a posição atual é empate por afogamento
-    pub fn is_stalemate(&self) -> bool {
-        if self.is_king_in_check(self.to_move) {
-            return false;
-        }
-
-        let moves = self.generate_all_moves();
-        moves.iter().all(|&mv| {
-            let mut temp = *self;
-            temp.make_move(mv);
-            temp.is_king_in_check(self.to_move)
-        })
-    }
-
-    /// Verifica se há empate por material insuficiente
-    pub fn is_draw_by_insufficient_material(&self) -> bool {
-        let total_pieces = self.white_pieces | self.black_pieces;
-        let piece_count = total_pieces.count_ones();
-
-        // King vs King
-        if piece_count == 2 {
-            return true;
-        }
-
-        // King + minor piece vs King
-        if piece_count == 3 {
-            let has_major_pieces = (self.pawns | self.rooks | self.queens) != 0;
-            if !has_major_pieces {
-                let minors = self.knights | self.bishops;
-                return minors.count_ones() == 1;
+            // Move a peça de volta usando moved_piece (evita branches)
+            match undo_info.moved_piece {
+                PieceKind::Pawn => self.pawns ^= from_bb | to_bb,
+                PieceKind::Knight => self.knights ^= from_bb | to_bb,
+                PieceKind::Bishop => self.bishops ^= from_bb | to_bb,
+                PieceKind::Rook => self.rooks ^= from_bb | to_bb,
+                PieceKind::Queen => self.queens ^= from_bb | to_bb,
+                PieceKind::King => self.kings ^= from_bb | to_bb,
             }
         }
 
-        // King + Bishop vs King + Bishop (same color squares)
-        if piece_count == 4 && (self.pawns | self.rooks | self.queens | self.knights) == 0 {
-            let white_bishops = self.bishops & self.white_pieces;
-            let black_bishops = self.bishops & self.black_pieces;
+        // ========================================================================
+        // RESTAURAR PEÇA CAPTURADA (se houver)
+        // ========================================================================
+        if let Some(captured_piece) = undo_info.captured_piece {
+            let captured_bb = 1u64 << undo_info.captured_square;
 
-            if white_bishops.count_ones() == 1 && black_bishops.count_ones() == 1 {
-                let light_squares = 0x55AA55AA55AA55AA;
-                let white_on_light = (white_bishops & light_squares) != 0;
-                let black_on_light = (black_bishops & light_squares) != 0;
-                return white_on_light == black_on_light;
+            // Restaura o tipo da peça capturada
+            match captured_piece {
+                PieceKind::Pawn => self.pawns |= captured_bb,
+                PieceKind::Knight => self.knights |= captured_bb,
+                PieceKind::Bishop => self.bishops |= captured_bb,
+                PieceKind::Rook => self.rooks |= captured_bb,
+                PieceKind::Queen => self.queens |= captured_bb,
+                PieceKind::King => self.kings |= captured_bb,
+            }
+
+            // Restaura a ocupação da peça capturada (cor oposta)
+            if moving_color == Color::White {
+                self.black_pieces |= captured_bb;
+            } else {
+                self.white_pieces |= captured_bb;
             }
         }
-
-        false
-    }
-
-    /// Verifica se há empate pela regra dos 50 movimentos
-    pub fn is_draw_by_50_moves(&self) -> bool {
-        self.halfmove_clock >= 100 // 50 movimentos = 100 half-moves
     }
 
     /// Calcula o hash Zobrist da posição atual
@@ -596,30 +582,6 @@ impl Board {
         hash
     }
 
-    /// Verifica se o jogo acabou (xeque-mate ou empate)
-    pub fn is_game_over(&self) -> bool {
-        self.is_checkmate() || self.is_stalemate() || self.is_draw_by_insufficient_material() || self.is_draw_by_50_moves()
-    }
-
-    /// Gera apenas movimentos legais (filtra movimentos que deixam o rei em xeque)
-    pub fn generate_legal_moves(&self) -> Vec<Move> {
-        let pseudo_legal = self.generate_all_moves();
-        pseudo_legal.into_iter()
-            .filter(|&mv| {
-                let mut temp = *self;
-                temp.make_move(mv);
-                !temp.is_king_in_check(self.to_move)
-            })
-            .collect()
-    }
-
-    /// Verifica se um movimento é legal
-    pub fn is_legal_move(&self, mv: Move) -> bool {
-        let mut temp = *self;
-        temp.make_move(mv);
-        !temp.is_king_in_check(self.to_move)
-    }
-
     /// Retorna o número de peças de cada tipo para avaliação
     pub fn piece_count(&self, color: Color, piece_kind: PieceKind) -> u32 {
         let color_pieces = if color == Color::White { self.white_pieces } else { self.black_pieces };
@@ -663,156 +625,8 @@ impl Board {
         false
     }
 
-    /// Executa um movimento e retorna informação para desfazê-lo
-    pub fn make_move_with_undo(&mut self, mv: Move) -> UndoInfo {
-        let (captured_piece, captured_square) = self.get_captured_piece(mv);
-        let moved_piece = self.get_piece_at(mv.from).unwrap().kind; // Identifica peça movida
-        
-        let undo_info = UndoInfo {
-            captured_piece,
-            captured_square,
-            moved_piece,
-            old_castling_rights: self.castling_rights,
-            old_en_passant_target: self.en_passant_target,
-            old_halfmove_clock: self.halfmove_clock,
-            old_zobrist_hash: self.zobrist_hash,
-            old_white_king_in_check: self.white_king_in_check,
-            old_black_king_in_check: self.black_king_in_check,
-        };
-
-        self.make_move(mv);
-        undo_info
-    }
-
-    /// Desfaz um movimento usando a informação de UndoInfo (CORRIGIDO PARA MOVIMENTOS ESPECIAIS)
-    pub fn unmake_move(&mut self, mv: Move, undo_info: UndoInfo) {
-        // Restaura o estado anterior
-        self.castling_rights = undo_info.old_castling_rights;
-        self.en_passant_target = undo_info.old_en_passant_target;
-        self.halfmove_clock = undo_info.old_halfmove_clock;
-        self.zobrist_hash = undo_info.old_zobrist_hash;
-        self.white_king_in_check = undo_info.old_white_king_in_check;
-        self.black_king_in_check = undo_info.old_black_king_in_check;
-
-        // Inverte a cor do jogador
-        self.to_move = !self.to_move;
-        let moving_color = self.to_move; // Cor original da peça que se moveu
-        let from_bb = 1u64 << mv.from;
-        let to_bb = 1u64 << mv.to;
-
-        // ========================================================================
-        // TRATAMENTO ESPECIAL PARA ROQUE
-        // ========================================================================
-        if mv.is_castling {
-            // Move o rei de volta
-            if moving_color == Color::White {
-                self.white_pieces ^= from_bb | to_bb;
-            } else {
-                self.black_pieces ^= from_bb | to_bb;
-            }
-            self.kings ^= from_bb | to_bb;
-            
-            // Move a torre de volta
-            if moving_color == Color::White {
-                if mv.to == 6 { // Roque pequeno
-                    let rook_from = 1u64 << 5; // f1
-                    let rook_to = 1u64 << 7;   // h1
-                    self.white_pieces ^= rook_from | rook_to;
-                    self.rooks ^= rook_from | rook_to;
-                } else { // Roque grande
-                    let rook_from = 1u64 << 3; // d1
-                    let rook_to = 1u64 << 0;   // a1
-                    self.white_pieces ^= rook_from | rook_to;
-                    self.rooks ^= rook_from | rook_to;
-                }
-            } else {
-                if mv.to == 62 { // Roque pequeno
-                    let rook_from = 1u64 << 61; // f8
-                    let rook_to = 1u64 << 63;   // h8
-                    self.black_pieces ^= rook_from | rook_to;
-                    self.rooks ^= rook_from | rook_to;
-                } else { // Roque grande
-                    let rook_from = 1u64 << 59; // d8
-                    let rook_to = 1u64 << 56;   // a8
-                    self.black_pieces ^= rook_from | rook_to;
-                    self.rooks ^= rook_from | rook_to;
-                }
-            }
-            return; // Roque não tem capturas
-        }
-
-        // ========================================================================
-        // TRATAMENTO ESPECIAL PARA PROMOÇÃO
-        // ========================================================================
-        if let Some(promoted) = mv.promotion {
-            // Restaura peão na casa de origem
-            self.pawns |= from_bb;
-            
-            // Remove peça promovida da casa de destino
-            match promoted {
-                PieceKind::Queen => self.queens &= !to_bb,
-                PieceKind::Rook => self.rooks &= !to_bb,
-                PieceKind::Bishop => self.bishops &= !to_bb,
-                PieceKind::Knight => self.knights &= !to_bb,
-                _ => unreachable!(),
-            }
-            
-            // Atualiza ocupação (peão volta para from, peça promovida sai de to)
-            if moving_color == Color::White {
-                self.white_pieces ^= from_bb | to_bb;
-            } else {
-                self.black_pieces ^= from_bb | to_bb;
-            }
-        } else {
-            // ====================================================================
-            // MOVIMENTO NORMAL (NÃO-PROMOÇÃO)
-            // ====================================================================
-            
-            // Atualiza ocupação
-            if moving_color == Color::White {
-                self.white_pieces ^= from_bb | to_bb;
-            } else {
-                self.black_pieces ^= from_bb | to_bb;
-            }
-
-            // Move a peça de volta usando moved_piece (evita branches)
-            match undo_info.moved_piece {
-                PieceKind::Pawn => self.pawns ^= from_bb | to_bb,
-                PieceKind::Knight => self.knights ^= from_bb | to_bb,
-                PieceKind::Bishop => self.bishops ^= from_bb | to_bb,
-                PieceKind::Rook => self.rooks ^= from_bb | to_bb,
-                PieceKind::Queen => self.queens ^= from_bb | to_bb,
-                PieceKind::King => self.kings ^= from_bb | to_bb,
-            }
-        }
-
-        // ========================================================================
-        // RESTAURAR PEÇA CAPTURADA (se houver)
-        // ========================================================================
-        if let Some(captured_piece) = undo_info.captured_piece {
-            let captured_bb = 1u64 << undo_info.captured_square;
-            
-            // Restaura o tipo da peça capturada
-            match captured_piece {
-                PieceKind::Pawn => self.pawns |= captured_bb,
-                PieceKind::Knight => self.knights |= captured_bb,
-                PieceKind::Bishop => self.bishops |= captured_bb,
-                PieceKind::Rook => self.rooks |= captured_bb,
-                PieceKind::Queen => self.queens |= captured_bb,
-                PieceKind::King => self.kings |= captured_bb,
-            }
-            
-            // Restaura a ocupação da peça capturada (cor oposta)
-            if moving_color == Color::White {
-                self.black_pieces |= captured_bb;
-            } else {
-                self.white_pieces |= captured_bb;
-            }
-        }
-    }
-
     /// Identifica que peça está em uma casa específica (otimizado para make/unmake)
-    fn get_piece_at(&self, square: u8) -> Option<Piece> {
+    pub(crate) fn get_piece_at(&self, square: u8) -> Option<Piece> {
         let bb = 1u64 << square;
         let color = if (self.white_pieces & bb) != 0 {
             Color::White
@@ -821,7 +635,7 @@ impl Board {
         } else {
             return None;
         };
-        
+
         let kind = if (self.pawns & bb) != 0 {
             PieceKind::Pawn
         } else if (self.knights & bb) != 0 {
@@ -837,7 +651,7 @@ impl Board {
         } else {
             return None;
         };
-        
+
         Some(Piece::new(kind, color))
     }
 
@@ -845,25 +659,25 @@ impl Board {
     fn get_captured_piece(&self, mv: Move) -> (Option<PieceKind>, u8) {
         if mv.is_en_passant {
             // En passant: peão capturado está numa casa diferente de mv.to
-            let captured_square = if self.to_move == Color::White { 
+            let captured_square = if self.to_move == Color::White {
                 mv.to - 8 // Peão preto capturado abaixo
-            } else { 
+            } else {
                 mv.to + 8 // Peão branco capturado acima
             };
             return (Some(PieceKind::Pawn), captured_square);
         }
-        
+
         let to_bb = 1u64 << mv.to;
-        let enemy_pieces = if self.to_move == Color::White { 
-            self.black_pieces 
-        } else { 
-            self.white_pieces 
+        let enemy_pieces = if self.to_move == Color::White {
+            self.black_pieces
+        } else {
+            self.white_pieces
         };
-        
+
         if (enemy_pieces & to_bb) == 0 {
             return (None, mv.to); // Não há captura
         }
-        
+
         if (self.pawns & to_bb) != 0 {
             (Some(PieceKind::Pawn), mv.to)
         } else if (self.knights & to_bb) != 0 {
@@ -878,57 +692,6 @@ impl Board {
             (Some(PieceKind::King), mv.to)
         } else {
             (None, mv.to)
-        }
-    }
-
-    /// Gera movimentos de peças deslizantes usando magic bitboards diretamente (OTIMIZADO)
-    #[inline(always)]
-    fn generate_sliding_moves(&self, moves: &mut Vec<Move>) {
-        let our_pieces = if self.to_move == Color::White { self.white_pieces } else { self.black_pieces };
-        let all_pieces = self.white_pieces | self.black_pieces;
-        
-        // Gerar movimentos de bispos
-        let mut our_bishops = self.bishops & our_pieces;
-        while our_bishops != 0 {
-            let from_sq = our_bishops.trailing_zeros() as u8;
-            let attacks = crate::moves::magic_bitboards::get_bishop_attacks_magic(from_sq, all_pieces);
-            let mut valid_moves = attacks & !our_pieces;
-            
-            while valid_moves != 0 {
-                let to_sq = valid_moves.trailing_zeros() as u8;
-                moves.push(Move { 
-                    from: from_sq, 
-                    to: to_sq, 
-                    promotion: None, 
-                    is_castling: false, 
-                    is_en_passant: false 
-                });
-                valid_moves &= valid_moves - 1;
-            }
-            
-            our_bishops &= our_bishops - 1;
-        }
-        
-        // Gerar movimentos de torres
-        let mut our_rooks = self.rooks & our_pieces;
-        while our_rooks != 0 {
-            let from_sq = our_rooks.trailing_zeros() as u8;
-            let attacks = crate::moves::magic_bitboards::get_rook_attacks_magic(from_sq, all_pieces);
-            let mut valid_moves = attacks & !our_pieces;
-            
-            while valid_moves != 0 {
-                let to_sq = valid_moves.trailing_zeros() as u8;
-                moves.push(Move { 
-                    from: from_sq, 
-                    to: to_sq, 
-                    promotion: None, 
-                    is_castling: false, 
-                    is_en_passant: false 
-                });
-                valid_moves &= valid_moves - 1;
-            }
-            
-            our_rooks &= our_rooks - 1;
         }
     }
 }
