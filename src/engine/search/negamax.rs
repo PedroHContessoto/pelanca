@@ -19,16 +19,11 @@ impl<E: Evaluator> NegamaxSearcher<E> {
         }
     }
 
-    fn negamax(&mut self, board: &Board, depth: u8, mut alpha: Score, beta: Score) -> Score {
+    fn negamax(&mut self, board: &Board, depth: u8, mut alpha: Score, beta: Score, ply: u8) -> Score {
         self.nodes_searched += 1;
 
-        // Condições terminais
-        if board.is_checkmate() {
-            return -SCORE_MATE;
-        }
-        if board.is_stalemate() || board.is_draw_by_insufficient_material()
-            || board.is_draw_by_50_moves()
-        {
+        // Draw por material insuficiente ou regra dos 50 lances
+        if board.is_draw_by_insufficient_material() || board.is_draw_by_50_moves() {
             return SCORE_DRAW;
         }
 
@@ -48,7 +43,7 @@ impl<E: Evaluator> NegamaxSearcher<E> {
             }
 
             has_legal_move = true;
-            let score = -self.negamax(&child, depth - 1, -beta, -alpha);
+            let score = -self.negamax(&child, depth - 1, -beta, -alpha, ply + 1);
 
             if score > best_score {
                 best_score = score;
@@ -62,8 +57,14 @@ impl<E: Evaluator> NegamaxSearcher<E> {
         }
 
         if !has_legal_move {
-            // Sem movimentos legais — já tratado por is_checkmate/is_stalemate
-            return SCORE_DRAW;
+            // Sem movimentos legais: mate ou stalemate
+            if board.is_king_in_check(board.to_move) {
+                // Checkmate — preferir mates mais curtos (ply menor = score mais negativo para oponente)
+                return -SCORE_MATE + ply as Score;
+            } else {
+                // Stalemate — empate
+                return SCORE_DRAW;
+            }
         }
 
         best_score
@@ -86,7 +87,7 @@ impl<E: Evaluator> Searcher for NegamaxSearcher<E> {
                 continue;
             }
 
-            let score = -self.negamax(&child, config.max_depth - 1, -beta, -alpha);
+            let score = -self.negamax(&child, config.max_depth - 1, -beta, -alpha, 1);
 
             if score > best_score {
                 best_score = score;
