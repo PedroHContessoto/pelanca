@@ -102,7 +102,7 @@ fn print_info(info: &SearchInfo) {
 
 /// Imprime identificação e opções do motor.
 fn handle_uci() {
-    println!("id name Pelanca Mate v3");
+    println!("id name Pelanca Mate v4");
     println!("id author Pedro Contessoto");
     println!("option name Hash type spin default 16 min 1 max 1024");
     println!("uciok");
