@@ -1,8 +1,8 @@
-// Pelanca Mate v4 - Entry Point
+// Pelanca Mate v5 - Entry Point
 //
 // Uso:
-//   pelanca_mate_v4           -> Modo UCI (para Arena e outras GUIs)
-//   pelanca_mate_v4 --bench   -> Modo benchmark (PERFT + busca)
+//   pelanca_mate_v5           -> Modo UCI (para Arena e outras GUIs)
+//   pelanca_mate_v5 --bench   -> Modo benchmark (PERFT + busca)
 
 use pelanca::*;
 use pelanca::engine::perft::perft_parallel;
@@ -22,7 +22,7 @@ fn main() {
 }
 
 fn run_bench() {
-    println!("=== Pelanca Mate v4 - Benchmark ===\n");
+    println!("=== Pelanca Mate v5 - Benchmark ===\n");
 
     // PERFT
     println!("--- PERFT (posicao inicial) ---");

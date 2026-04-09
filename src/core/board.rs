@@ -24,7 +24,7 @@ pub struct Board {
 
     pub en_passant_target: Option<u8>,
 
-    // Direitos de roque (pode_rocar_pequeno_brancas, pode_rocar_grande_brancas, pode_rocar_pequeno_pretas, pode_rocar_grande_pretas)
+    // Direitos de roque
     pub castling_rights: u8, // Bits: 0=K, 1=Q, 2=k, 3=q
 
     // Cache do estado de xeque para otimização
@@ -32,8 +32,8 @@ pub struct Board {
     pub black_king_in_check: bool,
 
     // Para detecção de draws
-    pub halfmove_clock: u16,   // Contador para regra dos 50 movimentos
-    pub zobrist_hash: u64,     // Hash Zobrist para detecção de repetição
+    pub halfmove_clock: u16,
+    pub zobrist_hash: u64,
 }
 
 impl Board {
@@ -618,7 +618,7 @@ impl Board {
     }
 
     /// Identifica que peça está em uma casa específica (otimizado para make/unmake)
-    pub(crate) fn get_piece_at(&self, square: u8) -> Option<Piece> {
+    pub fn get_piece_at(&self, square: u8) -> Option<Piece> {
         let bb = 1u64 << square;
         let color = if (self.white_pieces & bb) != 0 {
             Color::White

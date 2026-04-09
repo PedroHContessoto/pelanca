@@ -80,6 +80,12 @@ pub trait Evaluator: Send + Sync {
     fn name(&self) -> &str {
         "unnamed"
     }
+
+    /// Inicializa o estado de avaliação no board (chamado na raiz antes da busca).
+    fn init_eval_state(&self, _board: &mut Board) {}
+
+    /// Atualiza o estado de avaliação do child após um make_move.
+    fn update_eval_state(&self, _parent: &Board, _child: &mut Board, _mv: Move) {}
 }
 
 /// Trait para algoritmos de busca na árvore de jogo.

@@ -272,6 +272,7 @@ impl<E: Evaluator> NegamaxSearcher<E> {
 
             let mut child = *board;
             if !child.make_move(mv) { continue; }
+            self.evaluator.update_eval_state(board, &mut child, mv);
 
             let score = -self.quiescence(&child, -beta, -alpha, ply + 1);
             if self.should_stop() { return 0; }
@@ -316,6 +317,7 @@ impl<E: Evaluator> NegamaxSearcher<E> {
             let mv = *mv;
             let mut child = *board;
             if !child.make_move(mv) { continue; }
+            self.evaluator.update_eval_state(board, &mut child, mv);
 
             has_legal_move = true;
             let mut child_pv = Vec::new();
@@ -488,6 +490,7 @@ impl<E: Evaluator> NegamaxSearcher<E> {
             let mv = scored_moves[i].0;
             let mut child = *board;
             if !child.make_move(mv) { continue; }
+            self.evaluator.update_eval_state(board, &mut child, mv);
 
             has_legal_move = true;
 
@@ -611,6 +614,12 @@ impl<E: Evaluator> Searcher for NegamaxSearcher<E> {
         self.clear_move_ordering();
         // Initialize repetition stack from game history
         self.rep_stack = self.game_history.clone();
+
+        // Inicializar acumuladores NNUE na posição raiz
+        {
+            let mut root = *board;
+            self.evaluator.init_eval_state(&mut root);
+        }
 
         let mut best_result = SearchResult {
             best_move: None,

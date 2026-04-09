@@ -6,7 +6,11 @@ authors = ["Pedro Contessoto"]
 description = "High-performance chess engine written in Rust"
 
 [[bin]]
-name = "pelanca_mate_v4"
+name = "pelanca_mate_v5"
+path = "src/main.rs"
+
+[[bin]]
+name = "pelanca_mate_v5_nnue_v2"
 path = "src/main.rs"
 
 
@@ -17,7 +21,10 @@ num_cpus = "1.16"
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+
 [profile.release-lto]
 inherits = "release"
-lto = "fat"                 # modo mais agressivo (mas mais lento pra compilar)
-codegen-units = 1
