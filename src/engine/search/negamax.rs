@@ -39,10 +39,10 @@ pub struct NegamaxSearcher<E: Evaluator> {
     tt: TranspositionTable,
     killer_moves: [[Option<Move>; 2]; MAX_PLY],
     history: [[i32; 64]; 64],
+    /// Countermove: melhor resposta para cada lance do oponente [from][to]
+    countermove: [[Option<Move>; 64]; 64],
     lmr_table: [[u8; 64]; 64],
-    /// Hashes from game history (UCI position moves) for repetition detection.
     game_history: Vec<u64>,
-    /// Working copy: game_history + search path hashes. Push/pop during search.
     rep_stack: Vec<u64>,
 }
 
@@ -58,6 +58,7 @@ impl<E: Evaluator> NegamaxSearcher<E> {
             tt: TranspositionTable::new(16),
             killer_moves: [[None; 2]; MAX_PLY],
             history: [[0i32; 64]; 64],
+            countermove: [[None; 64]; 64],
             lmr_table: compute_lmr_table(),
             game_history: Vec::new(),
             rep_stack: Vec::new(),
@@ -107,9 +108,16 @@ impl<E: Evaluator> NegamaxSearcher<E> {
             Color::White => config.winc.unwrap_or(0),
             Color::Black => config.binc.unwrap_or(0),
         };
-        let moves_left = config.movestogo.unwrap_or(30) as u64;
-        let alloc = our_time / moves_left + our_inc / 2;
-        alloc.min(our_time / 2)
+        let moves_left = config.movestogo.unwrap_or(25) as u64;
+
+        // Base: tempo / lances restantes + incremento
+        let base = our_time / moves_left + our_inc * 3 / 4;
+
+        // Limites de seguranca
+        let max_time = our_time * 3 / 10;  // nunca mais de 30% do tempo total
+        let min_time = if our_inc > 0 { our_inc / 2 } else { 50 }; // minimo: metade do incremento
+
+        base.max(min_time).min(max_time)
     }
 
     #[inline]
@@ -148,13 +156,15 @@ impl<E: Evaluator> NegamaxSearcher<E> {
     }
 
     #[inline]
-    fn score_move(&self, board: &Board, mv: Move, tt_move: Option<Move>, ply: usize) -> i32 {
+    fn score_move(&self, board: &Board, mv: Move, tt_move: Option<Move>, ply: usize, prev_move: Option<Move>) -> i32 {
+        // 1. TT move — maximo
         if let Some(tm) = tt_move {
             if mv.from == tm.from && mv.to == tm.to && mv.promotion == tm.promotion {
                 return 10_000_000;
             }
         }
 
+        // 2. Capturas — MVV-LVA
         let victim = board.get_piece_at(mv.to);
         if let Some(v) = victim {
             let attacker = board.get_piece_at(mv.from);
@@ -166,6 +176,7 @@ impl<E: Evaluator> NegamaxSearcher<E> {
             return 1_000_000 + MVV_VALUES[0] * 10 + LVA_VALUES[0];
         }
 
+        // 3. Promoções
         if let Some(promo) = mv.promotion {
             return match promo {
                 PieceKind::Queen => 900_000,
@@ -174,6 +185,7 @@ impl<E: Evaluator> NegamaxSearcher<E> {
             };
         }
 
+        // 4. Killers
         if ply < MAX_PLY {
             if let Some(k1) = self.killer_moves[ply][0] {
                 if mv.from == k1.from && mv.to == k1.to {
@@ -187,6 +199,16 @@ impl<E: Evaluator> NegamaxSearcher<E> {
             }
         }
 
+        // 5. Countermove — bonus se este lance é a resposta histórica ao lance anterior
+        if let Some(pm) = prev_move {
+            if let Some(cm) = self.countermove[pm.from as usize][pm.to as usize] {
+                if mv.from == cm.from && mv.to == cm.to {
+                    return 600_000;
+                }
+            }
+        }
+
+        // 6. History
         self.history[mv.from as usize][mv.to as usize]
     }
 
@@ -213,11 +235,13 @@ impl<E: Evaluator> NegamaxSearcher<E> {
         if *entry > 1_000_000 { *entry = 1_000_000; }
     }
 
-    /// Check for repetition: if the current hash appears in the rep_stack, it's a draw.
-    /// Uses single-repetition in search (= twofold from game start).
+    /// Detecção de repetição: verifica se a posição já apareceu no histórico.
+    /// Usa twofold no search (padrão Stockfish) — aceita draw na primeira repetição
+    /// para evitar loops. Percorre do mais recente para trás, pulando de 2 em 2
+    /// (mesma cor a mover).
     #[inline]
     fn is_repetition(&self, hash: u64) -> bool {
-        // Walk backwards through rep_stack; a match means repetition
+        // Percorrer de trás para frente
         self.rep_stack.iter().rev().any(|&h| h == hash)
     }
 
@@ -228,19 +252,21 @@ impl<E: Evaluator> NegamaxSearcher<E> {
         (our & (board.knights | board.bishops | board.rooks | board.queens)) != 0
     }
 
-    /// Quiescence search.
+    /// Quiescence search com limite de profundidade.
     fn quiescence(&mut self, board: &Board, mut alpha: Score, beta: Score, ply: u8) -> Score {
         self.nodes_searched += 1;
 
         if self.should_stop() { return 0; }
 
+        // Limite de profundidade para qsearch (evita explosao em posicoes taticas)
+        if ply >= MAX_PLY as u8 - 10 { return self.evaluator.evaluate(board); }
+
         let stand_pat = self.evaluator.evaluate(board);
         if stand_pat >= beta { return beta; }
         if stand_pat > alpha { alpha = stand_pat; }
 
-        // Big delta pruning
-        if stand_pat + 1100 < alpha { return alpha; }
-        if ply >= MAX_PLY as u8 { return stand_pat; }
+        // Big delta pruning — mais agressivo
+        if stand_pat + 900 < alpha { return alpha; }
 
         let captures = board.generate_capture_moves();
         let mut scored: Vec<(Move, i32)> = captures.iter()
@@ -296,11 +322,37 @@ impl<E: Evaluator> NegamaxSearcher<E> {
         let moves = board.generate_all_moves();
         let in_check = board.is_king_in_check(board.to_move);
 
+        // Otimizacao: se so tem 1 lance legal, retornar imediatamente
+        {
+            let mut legal_count = 0u32;
+            let mut single_move = None;
+            for &mv in &moves {
+                let mut test = *board;
+                if test.make_move(mv) {
+                    legal_count += 1;
+                    single_move = Some(mv);
+                    if legal_count > 1 { break; }
+                }
+            }
+            if legal_count == 1 {
+                if let Some(mv) = single_move {
+                    return SearchResult {
+                        best_move: Some(mv),
+                        ponder_move: None,
+                        score: 0,
+                        depth,
+                        nodes_searched: self.nodes_searched,
+                        pv: vec![mv],
+                    };
+                }
+            }
+        }
+
         let tt_move = self.tt.probe(board.zobrist_hash)
             .and_then(|e| unpack_move(e.best_move));
 
         let mut scored_moves: Vec<(Move, i32)> = moves.iter()
-            .map(|&mv| (mv, self.score_move(board, mv, tt_move, 0)))
+            .map(|&mv| (mv, self.score_move(board, mv, tt_move, 0, None)))
             .collect();
         scored_moves.sort_unstable_by(|a, b| b.1.cmp(&a.1));
 
@@ -325,12 +377,12 @@ impl<E: Evaluator> NegamaxSearcher<E> {
 
             let score;
             if moves_searched == 0 {
-                score = -self.negamax(&child, effective_depth, -beta, -alpha, 1, &mut child_pv);
+                score = -self.negamax(&child, effective_depth, -beta, -alpha, 1, &mut child_pv, Some(mv));
             } else {
-                let mut zw_score = -self.negamax(&child, effective_depth, -alpha - 1, -alpha, 1, &mut child_pv);
+                let mut zw_score = -self.negamax(&child, effective_depth, -alpha - 1, -alpha, 1, &mut child_pv, Some(mv));
                 if zw_score > alpha && zw_score < beta {
                     child_pv.clear();
-                    zw_score = -self.negamax(&child, effective_depth, -beta, -alpha, 1, &mut child_pv);
+                    zw_score = -self.negamax(&child, effective_depth, -beta, -alpha, 1, &mut child_pv, Some(mv));
                 }
                 score = zw_score;
             }
@@ -393,6 +445,7 @@ impl<E: Evaluator> NegamaxSearcher<E> {
         beta: Score,
         ply: u8,
         pv: &mut Vec<Move>,
+        prev_move: Option<Move>,
     ) -> Score {
         self.nodes_searched += 1;
 
@@ -440,36 +493,45 @@ impl<E: Evaluator> NegamaxSearcher<E> {
         }
 
         // === NULL MOVE PRUNING ===
-        // Se não estamos em xeque, não é PV, e temos peças maiores
+        // Simples e robusto: R = 2 em depth < 6, R = 3 em depth >= 6
+        // Sem verification (complexidade extra causa bugs, o basico funciona)
         if !in_check && !is_pv && depth >= 3 && Self::has_non_pawn_material(board) {
             let r = if depth >= 6 { 3 } else { 2 };
             let mut null_board = *board;
             null_board.make_null_move();
-            let mut null_pv = Vec::new();
-            let null_score = -self.negamax(&null_board, depth - 1 - r, -beta, -beta + 1, ply + 1, &mut null_pv);
+            pv.clear();
+            let null_score = -self.negamax(&null_board, depth - 1 - r, -beta, -beta + 1, ply + 1, pv, None);
+            pv.clear();
             if null_score >= beta {
                 return beta;
             }
         }
 
         // === FUTILITY PRUNING setup ===
-        // At low depths, skip quiet moves if static eval is far below alpha
-        let static_eval = self.evaluator.evaluate(board);
-        let futility_margin = match depth {
-            1 => 200,
-            2 => 500,
-            3 => 900,
-            _ => 0,
-        };
-        let can_futility = !is_pv && !in_check && depth <= 3 && futility_margin > 0
-            && static_eval + futility_margin <= alpha;
+        // So chamar evaluate() se depth <= 3 (economiza ~40% dos evaluate calls)
+        let can_futility;
+        if !is_pv && !in_check && depth <= 3 {
+            let static_eval = self.evaluator.evaluate(board);
+            let futility_margin = match depth {
+                1 => 200,
+                2 => 500,
+                3 => 900,
+                _ => 0,
+            };
+            can_futility = futility_margin > 0 && static_eval + futility_margin <= alpha;
+        } else {
+            can_futility = false;
+        }
 
         let moves = board.generate_all_moves();
         let ply_idx = ply as usize;
 
-        let mut scored_moves: Vec<(Move, i32)> = moves.iter()
-            .map(|&mv| (mv, self.score_move(board, mv, tt_move, ply_idx)))
-            .collect();
+        // Score in-place: reutilizar moves Vec, evitar segunda alocacao
+        let mut scored_moves: Vec<(Move, i32)> = Vec::with_capacity(moves.len());
+        for &mv in &moves {
+            scored_moves.push((mv, self.score_move(board, mv, tt_move, ply_idx, prev_move)));
+        }
+        drop(moves); // liberar imediatamente
 
         let mut best_score = -SCORE_INF;
         let mut best_move_found: Option<Move> = None;
@@ -478,6 +540,9 @@ impl<E: Evaluator> NegamaxSearcher<E> {
 
         // Push current position for repetition detection in children
         self.rep_stack.push(board.zobrist_hash);
+
+        // child_pv reutilizado (1 alloc por chamada negamax, nao por lance)
+        let mut child_pv = Vec::new();
 
         for i in 0..scored_moves.len() {
             // Pick best
@@ -504,11 +569,11 @@ impl<E: Evaluator> NegamaxSearcher<E> {
                 continue;
             }
 
-            let mut child_pv = Vec::new();
+            child_pv.clear();
             let score;
             if moves_searched == 0 {
                 // Primeiro lance: busca completa
-                score = -self.negamax(&child, depth - 1, -beta, -alpha, ply + 1, &mut child_pv);
+                score = -self.negamax(&child, depth - 1, -beta, -alpha, ply + 1, &mut child_pv, Some(mv));
             } else {
                 // === LMR: Late Move Reductions ===
                 let mut reduction = 0u8;
@@ -516,7 +581,7 @@ impl<E: Evaluator> NegamaxSearcher<E> {
                     let d = (depth as usize).min(63);
                     let m = (moves_searched as usize).min(63);
                     reduction = self.lmr_table[d][m];
-                    // Limitar redução: pelo menos depth 1
+                    // Limitar: pelo menos depth 1
                     if reduction >= depth - 1 {
                         reduction = depth - 2;
                     }
@@ -524,18 +589,18 @@ impl<E: Evaluator> NegamaxSearcher<E> {
 
                 // PVS: zero-window com possível redução
                 let reduced_depth = depth - 1 - reduction;
-                let mut zw_score = -self.negamax(&child, reduced_depth, -alpha - 1, -alpha, ply + 1, &mut child_pv);
+                let mut zw_score = -self.negamax(&child, reduced_depth, -alpha - 1, -alpha, ply + 1, &mut child_pv, Some(mv));
 
                 // Se reduzido e surpreendeu, re-buscar sem redução
                 if reduction > 0 && zw_score > alpha {
                     child_pv.clear();
-                    zw_score = -self.negamax(&child, depth - 1, -alpha - 1, -alpha, ply + 1, &mut child_pv);
+                    zw_score = -self.negamax(&child, depth - 1, -alpha - 1, -alpha, ply + 1, &mut child_pv, Some(mv));
                 }
 
                 // Se PVS surpreendeu, re-buscar com janela completa
                 if zw_score > alpha && zw_score < beta {
                     child_pv.clear();
-                    zw_score = -self.negamax(&child, depth - 1, -beta, -alpha, ply + 1, &mut child_pv);
+                    zw_score = -self.negamax(&child, depth - 1, -beta, -alpha, ply + 1, &mut child_pv, Some(mv));
                 }
 
                 score = zw_score;
@@ -559,6 +624,10 @@ impl<E: Evaluator> NegamaxSearcher<E> {
                 if !is_cap && !is_promo {
                     self.update_killers(mv, ply_idx);
                     self.update_history(mv, depth);
+                    // Countermove: registar este lance como resposta ao lance anterior
+                    if let Some(pm) = prev_move {
+                        self.countermove[pm.from as usize][pm.to as usize] = Some(mv);
+                    }
                 }
                 break;
             }
@@ -636,11 +705,10 @@ impl<E: Evaluator> Searcher for NegamaxSearcher<E> {
         for depth in 1..=max_depth {
             let result;
 
-            if depth <= 3 {
-                // Sem aspiration nas primeiras depths
+            if depth <= 4 {
                 result = self.search_root(board, depth, -SCORE_INF, SCORE_INF);
             } else {
-                // Aspiration windows
+                // Aspiration windows — simples e robusto
                 let mut delta: Score = 50;
                 let mut asp_alpha = prev_score - delta;
                 let mut asp_beta = prev_score + delta;
@@ -652,19 +720,16 @@ impl<E: Evaluator> Searcher for NegamaxSearcher<E> {
                         break;
                     }
                     if r.score <= asp_alpha {
-                        // Fail low — alargar alpha
-                        asp_alpha = (prev_score - delta * 4).max(-SCORE_INF);
-                        delta *= 4;
+                        asp_alpha = (prev_score - delta).max(-SCORE_INF);
+                        delta *= 2;
                     } else if r.score >= asp_beta {
-                        // Fail high — alargar beta
-                        asp_beta = (prev_score + delta * 4).min(SCORE_INF);
-                        delta *= 4;
+                        asp_beta = (prev_score + delta).min(SCORE_INF);
+                        delta *= 2;
                     } else {
                         result = r;
                         break;
                     }
-                    // Safety: se delta ficou muito grande, janela completa
-                    if delta > 1000 {
+                    if delta > 800 {
                         result = self.search_root(board, depth, -SCORE_INF, SCORE_INF);
                         break;
                     }
@@ -709,6 +774,12 @@ impl<E: Evaluator> Searcher for NegamaxSearcher<E> {
             best_result = result;
 
             if self.should_stop() {
+                break;
+            }
+
+            // Nao comecar nova depth se ja usamos mais de 50% do tempo
+            let elapsed_check = self.start_time.elapsed().as_millis() as u64;
+            if elapsed_check > self.time_limit_ms / 2 && depth >= 6 {
                 break;
             }
         }

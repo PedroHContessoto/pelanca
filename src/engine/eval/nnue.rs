@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 const INPUT_SIZE: usize = 768;
 const FT_SIZE: usize = 256;
-const HIDDEN_SIZE: usize = 8; // v2: reduzido de 32→8 (4x menos compute no gargalo)
+const HIDDEN_SIZE: usize = 16; // v3: 16 neuronios (equilibrio velocidade/qualidade)
 
 const FT_QUANT_SCALE: i32 = 64;
 const HIDDEN_QUANT_SCALE: i32 = 64;
@@ -22,7 +22,7 @@ const CRELU_MAX_FT: i16 = FT_QUANT_SCALE as i16;
 const CRELU_MAX_HIDDEN: i32 = (FT_QUANT_SCALE * HIDDEN_QUANT_SCALE) as i32;
 
 const MAGIC: [u8; 4] = *b"PLNN";
-const VERSION: u32 = 2; // v2: hidden=8
+const VERSION: u32 = 3; // v3: hidden=16, sem material anchor
 
 // Cache: potência de 2 para masking rápido
 const ACC_CACHE_BITS: usize = 17;  // 2^17 = 131072 entradas
@@ -198,26 +198,8 @@ impl NnueEvaluator {
     }
 }
 
-/// Contagem rápida de material (centipawns, perspectiva do STM).
-#[inline]
-fn quick_material(board: &Board) -> Score {
-    const VALUES: [Score; 6] = [100, 320, 330, 500, 900, 0]; // P N B R Q K
-    let bbs = [board.pawns, board.knights, board.bishops, board.rooks, board.queens, board.kings];
-    let mut white = 0i32;
-    let mut black = 0i32;
-    for i in 0..5 { // ignorar rei
-        white += (bbs[i] & board.white_pieces).count_ones() as i32 * VALUES[i];
-        black += (bbs[i] & board.black_pieces).count_ones() as i32 * VALUES[i];
-    }
-    match board.to_move {
-        Color::White => white - black,
-        Color::Black => black - white,
-    }
-}
-
 impl Evaluator for NnueEvaluator {
     fn evaluate(&self, board: &Board) -> Score {
-        // Tentar cache
         let acc = match self.cache.get(board.zobrist_hash) {
             Some(a) => a,
             None => {
@@ -230,12 +212,7 @@ impl Evaluator for NnueEvaluator {
             Color::White => (&acc[0], &acc[1]),
             Color::Black => (&acc[1], &acc[0]),
         };
-        let nnue_score = self.forward(stm, nstm);
-
-        // Material anchor: misturar NNUE (80%) com material (20%)
-        // Evita sacrifícios posicionais insensatos quando a busca é rasa
-        let mat = quick_material(board);
-        (nnue_score * 4 + mat) / 5
+        self.forward(stm, nstm)
     }
 
     fn name(&self) -> &str { "nnue-v3" }

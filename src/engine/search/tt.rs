@@ -163,12 +163,17 @@ impl TranspositionTable {
         let key32 = (hash >> 32) as u32;
         let existing = &self.table[idx];
 
-        // Replace se: mesma posição, depth maior ou igual, ou entrada velha
-        if existing.depth == 0
+        // Replace policy melhorada:
+        // 1. Slot vazio → sempre preencher
+        // 2. Mesma posição → sempre atualizar
+        // 3. Entrada de geração anterior → substituir (entradas velhas saem primeiro)
+        // 4. Mesma geração mas depth maior → substituir
+        let replace = existing.depth == 0
             || existing.key == key32
-            || depth >= existing.depth
             || existing.age != self.generation
-        {
+            || (existing.age == self.generation && depth + 2 >= existing.depth);
+
+        if replace {
             self.table[idx] = TTEntry {
                 key: key32,
                 best_move,
